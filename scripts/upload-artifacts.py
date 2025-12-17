@@ -62,20 +62,25 @@ def upload_file(s3_client, bucket: str, local_path: Path, s3_key: str) -> None:
     """Upload a file to S3 with progress."""
     file_size = local_path.stat().st_size
     uploaded = 0
+    last_pct_logged = -10  # Track last logged percentage
 
     def progress_callback(bytes_transferred):
-        nonlocal uploaded
+        nonlocal uploaded, last_pct_logged
         uploaded += bytes_transferred
         pct = (uploaded / file_size) * 100
-        print(f"\r  Uploading {local_path.name}: {uploaded:,} / {file_size:,} bytes ({pct:.1f}%)", end="")
+        # Only log every 10%
+        if pct >= last_pct_logged + 10:
+            print(f"  {local_path.name}: {pct:.0f}% ({uploaded:,} / {file_size:,} bytes)")
+            last_pct_logged = int(pct // 10) * 10
 
+    print(f"Uploading {local_path.name}...")
     s3_client.upload_file(
         str(local_path),
         bucket,
         s3_key,
         Callback=progress_callback,
     )
-    print()  # newline after progress
+    print(f"  Uploaded {local_path.name}")
 
 
 def main() -> int:

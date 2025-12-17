@@ -13,6 +13,8 @@ Usage: download-iso.py <system> <version>
 """
 
 import hashlib
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -55,14 +57,18 @@ def download_file(url: str, dest: Path, desc: str = "") -> None:
 
             with open(dest, "wb") as f:
                 downloaded = 0
+                last_pct_logged = -10  # Track last logged percentage
                 for chunk in resp.iter_bytes(chunk_size=8192):
                     f.write(chunk)
                     downloaded += len(chunk)
                     if total:
                         pct = (downloaded / total) * 100
-                        print(f"\r  {downloaded:,} / {total:,} bytes ({pct:.1f}%)", end="")
+                        # Only log every 10%
+                        if pct >= last_pct_logged + 10:
+                            print(f"  {pct:.0f}% ({downloaded:,} / {total:,} bytes)")
+                            last_pct_logged = int(pct // 10) * 10
 
-    print()  # newline after progress
+    print(f"  Downloaded {dest.name}")
 
 
 def verify_sha256(file_path: Path, expected_hash: str) -> bool:
@@ -74,8 +80,30 @@ def verify_sha256(file_path: Path, expected_hash: str) -> bool:
     return sha256.hexdigest() == expected_hash
 
 
+def verify_cosign(file_path: Path, bundle_path: Path, identity_regexp: str, oidc_issuer: str) -> bool:
+    """Verify a file using cosign with a Sigstore bundle."""
+    if not shutil.which("cosign"):
+        print("  Warning: cosign not found, skipping signature verification")
+        return True  # Don't fail if cosign isn't available
+
+    cmd = [
+        "cosign", "verify-blob",
+        "--bundle", str(bundle_path),
+        "--certificate-identity-regexp", identity_regexp,
+        "--certificate-oidc-issuer", oidc_issuer,
+        str(file_path),
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"  cosign verification failed: {result.stderr}", file=sys.stderr)
+        return False
+
+    return True
+
+
 def download_talos(version: str, manifest: dict, download_dir: Path) -> None:
-    """Download Talos Linux ISO and verify checksum."""
+    """Download Talos Linux ISO and verify checksum and signature."""
     owner = manifest["source"]["github"]["owner"]
     repo = manifest["source"]["github"]["repo"]
     asset_pattern = manifest["source"].get("asset_pattern", "metal-amd64.iso")
@@ -89,6 +117,14 @@ def download_talos(version: str, manifest: dict, download_dir: Path) -> None:
 
     iso_path = download_dir / asset_pattern
     download_file(assets[asset_pattern], iso_path, asset_pattern)
+
+    # Download Sigstore bundle for signature verification
+    bundle_name = f"{asset_pattern}.bundle"
+    bundle_path = download_dir / bundle_name
+    if bundle_name in assets:
+        download_file(assets[bundle_name], bundle_path, bundle_name)
+    else:
+        print(f"  Warning: {bundle_name} not found, skipping signature verification")
 
     # Download and parse checksums
     if "sha256sum.txt" not in assets:
@@ -107,12 +143,23 @@ def download_talos(version: str, manifest: dict, download_dir: Path) -> None:
     if not expected_hash:
         raise ValueError(f"Checksum for {asset_pattern} not found in sha256sum.txt")
 
-    # Verify
-    print(f"Verifying checksum for {asset_pattern}...")
+    # Verify SHA256 checksum
+    print(f"Verifying SHA256 checksum...")
     if not verify_sha256(iso_path, expected_hash):
-        raise ValueError("Checksum verification failed!")
+        raise ValueError("SHA256 checksum verification failed!")
+    print("  SHA256 checksum verified")
 
-    print("Checksum verified successfully")
+    # Verify cosign signature
+    if bundle_path.exists():
+        print("Verifying cosign signature...")
+        if not verify_cosign(
+            iso_path,
+            bundle_path,
+            identity_regexp=f"https://github.com/{owner}/{repo}/",
+            oidc_issuer="https://token.actions.githubusercontent.com",
+        ):
+            raise ValueError("Cosign signature verification failed!")
+        print("  Cosign signature verified")
 
     # Write individual checksum file for upload
     individual_checksum = download_dir / f"{asset_pattern}.sha256"
