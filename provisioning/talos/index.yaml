@@ -2,10 +2,18 @@ name: Talos Linux
 type: iso
 
 source:
+  type: github_release
   github:
     owner: siderolabs
     repo: talos
   asset_pattern: "metal-amd64.iso"
+
+verification:
+  checksum:
+    type: combined_file
+    filename: sha256sum.txt
+  signature:
+    type: cosign
 
 artifacts:
   iso: true
