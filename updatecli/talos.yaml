@@ -1,0 +1,47 @@
+name: Talos Linux Version Check
+
+scms:
+  default:
+    kind: github
+    spec:
+      user: "github-actions[bot]"
+      email: "41898282+github-actions[bot]@users.noreply.github.com"
+      owner: '{{ requiredEnv "GITHUB_REPOSITORY_OWNER" }}'
+      repository: '{{ requiredEnv "GITHUB_REPOSITORY_NAME" }}'
+      branch: master
+
+sources:
+  talos-release:
+    kind: githubrelease
+    spec:
+      owner: siderolabs
+      repository: talos
+      versionfilter:
+        kind: semver
+
+conditions:
+  check-not-exists:
+    name: Check version not already tracked
+    kind: shell
+    sourceid: talos-release
+    spec:
+      command: ./scripts/check-version-exists.py talos '{{ source "talos-release" }}'
+
+targets:
+  prepend-version:
+    name: Prepend new version to manifest
+    kind: shell
+    sourceid: talos-release
+    scmid: default
+    spec:
+      command: ./scripts/prepend-version.py talos '{{ source "talos-release" }}'
+
+actions:
+  github-pr:
+    kind: github/pullrequest
+    scmid: default
+    spec:
+      title: 'chore(provisioning): bump Talos to {{ source "talos-release" }}'
+      labels:
+        - provisioning
+        - automated
