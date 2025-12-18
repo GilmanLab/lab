@@ -1,0 +1,128 @@
+# Bootstrap PXE appliance helper recipes
+#
+# Requires: just, packer, qemu/kvm, libvirt (for integration test), uv, talosctl, curl
+#
+# Usage examples:
+#   just build
+#   just test
+#   just test build=false
+#   just test gui=true
+#   just cleanup
+
+# ---- Tunables (override on CLI: `just <recipe> VAR=value`) ----
+TALOS_VERSION      := "v1.11.6"
+BOOTSTRAP_VERSION  := "local-test"
+# Default is derived in the integration test from packer template; keep a placeholder here.
+MINIPC_MAC         := "02:11:32:24:64:5b"
+
+# ---- Paths ----
+ROOT := justfile_directory()
+REPO := ROOT + "/../.."
+
+default:
+  @just --list
+
+# 1) Build the appliance (packer -> raw.gz under artifacts/bootstrap/<BOOTSTRAP_VERSION>/)
+build:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{REPO}}"
+  # Packer refuses to run if the qemu builder output directory already exists.
+  rm -rf "artifacts/bootstrap/{{BOOTSTRAP_VERSION}}/qemu"
+  provisioning/bootstrap/build.sh "{{TALOS_VERSION}}" "{{BOOTSTRAP_VERSION}}" "{{MINIPC_MAC}}"
+
+# 2) Run the integration test
+#
+# Defaults:
+# - build=true  (one-shot build + test)
+# - gui=false   (headless)
+# - keep=false  (don't keep libvirt artifacts on failure)
+#
+# Examples:
+#   just test
+#   just test build=false
+#   just test gui=true keep=true
+test build="true" gui="false" keep="false" sudo="false":
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  BUILD="{{build}}"
+  GUI="{{gui}}"
+  KEEP="{{keep}}"
+  SUDO="{{sudo}}"
+
+  keep_on_fail="$KEEP"
+  if [[ "$GUI" == "true" && "$KEEP" == "false" ]]; then
+    keep_on_fail="true"
+  fi
+
+  cd "{{ROOT}}/integration"
+  uv sync --group dev
+
+  if [[ "$BUILD" == "true" ]]; then
+    echo "[just] building appliance (streaming packer output)..." >&2
+    cd "{{REPO}}"
+    rm -rf "artifacts/bootstrap/{{BOOTSTRAP_VERSION}}/qemu"
+    provisioning/bootstrap/build.sh "{{TALOS_VERSION}}" "{{BOOTSTRAP_VERSION}}" "{{MINIPC_MAC}}"
+    cd "{{ROOT}}/integration"
+  fi
+
+  export IT_LIBVIRT_URI="qemu:///system"
+  export IT_LIBVIRT_POOL="default"
+  # If we built a new image, refresh the cached libvirt pool volume to match it.
+  # (Otherwise you can accidentally boot an older cached volume.)
+  if [[ "$BUILD" == "true" ]]; then
+    export IT_LIBVIRT_REFRESH_VOLUME="true"
+  fi
+  export IT_LIBVIRT_KEEP_VOLUME="true"
+  export IT_BOOTSTRAP_VERSION="{{BOOTSTRAP_VERSION}}"
+  export IT_TALOS_VERSION="{{TALOS_VERSION}}"
+  export IT_MINIPC_MAC="{{MINIPC_MAC}}"
+  export IT_GUI="$GUI"
+  export IT_KEEP_ON_FAIL="$keep_on_fail"
+  # keep=true means keep artifacts even on success (useful for manual validation).
+  export IT_KEEP="$KEEP"
+  # sudo=true means run libvirt operations with sudo -n (useful on CI runners like WarpBuild).
+  export IT_SUDO="$SUDO"
+
+  uv run pytest -m integration -s -vv --maxfail=1
+
+# Cleanup leftover libvirt artifacts from GUI/debug runs
+#
+# Deletes:
+# - networks named `bootstrap-it-*` and `bootstrap-uplink-*`
+# - domains named `bootstrap-appliance-*` and `bootstrap-client-*`
+# - volumes in the `default` pool named `bootstrap-pxe-*.raw` and `bootstrap-client-*.qcow2`
+cleanup:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  uri="qemu:///system"
+  pool="default"
+  echo "[cleanup] using uri=$uri pool=$pool"
+
+  while IFS= read -r dom; do
+    [[ -z "$dom" ]] && continue
+    echo "[cleanup] domain: $dom"
+    virsh -c "$uri" destroy "$dom" >/dev/null 2>&1 || true
+    virsh -c "$uri" undefine "$dom" --nvram >/dev/null 2>&1 || true
+    virsh -c "$uri" undefine "$dom" >/dev/null 2>&1 || true
+  done < <(virsh -c "$uri" list --all --name | grep -E '^(bootstrap-appliance-|bootstrap-client-)' || true)
+
+  while IFS= read -r net; do
+    [[ -z "$net" ]] && continue
+    echo "[cleanup] network: $net"
+    virsh -c "$uri" net-autostart "$net" --disable >/dev/null 2>&1 || true
+    virsh -c "$uri" net-destroy "$net" >/dev/null 2>&1 || true
+    virsh -c "$uri" net-undefine "$net" >/dev/null 2>&1 || true
+  done < <(virsh -c "$uri" net-list --all | awk 'NR>2 {print $1}' | grep -E '^(bootstrap-it-|bootstrap-uplink-)' || true)
+
+  while IFS= read -r vol; do
+    [[ -z "$vol" ]] && continue
+    echo "[cleanup] volume: $vol"
+    virsh -c "$uri" vol-delete "$vol" "$pool" >/dev/null 2>&1 || true
+  done < <(virsh -c "$uri" vol-list "$pool" | awk 'NR>2 {print $1}' | grep -E '^(bootstrap-pxe-.*\\.raw|bootstrap-client-.*\\.qcow2)$' || true)
+
+  echo "[cleanup] done"
+
+

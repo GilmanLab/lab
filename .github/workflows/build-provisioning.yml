@@ -4,6 +4,7 @@ on:
   push:
     branches: [master]
     paths:
+      - '.github/workflows/build-provisioning.yml'
       - 'provisioning/*/index.yaml'
   workflow_dispatch:
     inputs:
@@ -23,7 +24,7 @@ env:
 
 jobs:
   detect-changes:
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     outputs:
       systems: ${{ steps.changes.outputs.systems }}
     steps:
@@ -49,7 +50,7 @@ jobs:
   build:
     needs: detect-changes
     if: needs.detect-changes.outputs.systems != '[]'
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     timeout-minutes: 60
     strategy:
       fail-fast: false

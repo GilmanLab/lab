@@ -1,0 +1,20 @@
+[project]
+name = "bootstrap-integration"
+version = "0.1.0"
+description = "Integration tests for the bootstrap PXE VM appliance (libvirt/QEMU)"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+markers = [
+  "integration: libvirt/QEMU integration tests (boot appliance + PXE client)",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0.0",
+]
+
+
