@@ -24,7 +24,7 @@ env:
 
 jobs:
   detect-changes:
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     outputs:
       systems: ${{ steps.changes.outputs.systems }}
     steps:
