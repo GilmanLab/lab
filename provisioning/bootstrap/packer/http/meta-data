@@ -1,0 +1,4 @@
+instance-id: bootstrap-pxe
+local-hostname: bootstrap-pxe
+
+

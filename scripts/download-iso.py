@@ -27,7 +27,7 @@ GITHUB_API = "https://api.github.com"
 
 def get_manifest(system: str) -> dict:
     """Load the provisioning manifest for a system."""
-    manifest_path = Path(f"provisioning/{system}/index.yaml")
+    manifest_path = Path(f"provisioning/images/{system}/index.yaml")
     if not manifest_path.exists():
         raise FileNotFoundError(f"Manifest not found: {manifest_path}")
 

@@ -1,0 +1,6 @@
+creation_rules:
+  - path_regex: '.*$'
+    age:
+      - age1uyw8yr95j4h7wexqf0jkvwtxgvfhkuwyhnkkcxwmfavge8j5vassztfq7e
+    pgp:
+      - "3965 F16E 2934 66CF E77D  47F3 8C15 553E EB22 DB2A"
