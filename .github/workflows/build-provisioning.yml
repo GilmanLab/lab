@@ -111,7 +111,7 @@ name: Build Provisioning Artifacts
 #           done
 
 on:
-  workflow_dispatch: {}
+  push:
 
 jobs:
   preflight:
