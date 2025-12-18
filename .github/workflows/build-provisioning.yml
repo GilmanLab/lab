@@ -3,9 +3,9 @@ name: Build Provisioning Artifacts
 on:
   push:
     branches: [master]
-    paths:
-      - '.github/workflows/build-provisioning.yml'
-      - 'provisioning/*/index.yaml'
+    # paths:
+    #   - '.github/workflows/build-provisioning.yml'
+    #   - 'provisioning/*/index.yaml'
   workflow_dispatch:
     inputs:
       system:
