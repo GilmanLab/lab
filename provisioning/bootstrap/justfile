@@ -42,13 +42,14 @@ build:
 #   just test
 #   just test build=false
 #   just test gui=true keep=true
-test build="true" gui="false" keep="false":
+test build="true" gui="false" keep="false" sudo="false":
   #!/usr/bin/env bash
   set -euo pipefail
 
   BUILD="{{build}}"
   GUI="{{gui}}"
   KEEP="{{keep}}"
+  SUDO="{{sudo}}"
 
   keep_on_fail="$KEEP"
   if [[ "$GUI" == "true" && "$KEEP" == "false" ]]; then
@@ -81,13 +82,15 @@ test build="true" gui="false" keep="false":
   export IT_KEEP_ON_FAIL="$keep_on_fail"
   # keep=true means keep artifacts even on success (useful for manual validation).
   export IT_KEEP="$KEEP"
+  # sudo=true means run libvirt operations with sudo -n (useful on CI runners like WarpBuild).
+  export IT_SUDO="$SUDO"
 
   uv run pytest -m integration -s -vv --maxfail=1
 
 # Cleanup leftover libvirt artifacts from GUI/debug runs
 #
 # Deletes:
-# - networks named `bootstrap-it-*`
+# - networks named `bootstrap-it-*` and `bootstrap-uplink-*`
 # - domains named `bootstrap-appliance-*` and `bootstrap-client-*`
 # - volumes in the `default` pool named `bootstrap-pxe-*.raw` and `bootstrap-client-*.qcow2`
 cleanup:
@@ -112,7 +115,7 @@ cleanup:
     virsh -c "$uri" net-autostart "$net" --disable >/dev/null 2>&1 || true
     virsh -c "$uri" net-destroy "$net" >/dev/null 2>&1 || true
     virsh -c "$uri" net-undefine "$net" >/dev/null 2>&1 || true
-  done < <(virsh -c "$uri" net-list --all | awk 'NR>2 {print $1}' | grep -E '^bootstrap-it-' || true)
+  done < <(virsh -c "$uri" net-list --all | awk 'NR>2 {print $1}' | grep -E '^(bootstrap-it-|bootstrap-uplink-)' || true)
 
   while IFS= read -r vol; do
     [[ -z "$vol" ]] && continue

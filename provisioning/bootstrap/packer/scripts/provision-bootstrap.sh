@@ -23,7 +23,8 @@ set -euo pipefail
 # - /tmp/dnsmasq.conf.tpl
 # - /tmp/boot.ipxe.tpl
 # - /tmp/nginx-bootstrap.conf
-# - /tmp/extract-talos-netboot.sh
+# - /tmp/bootstrap-nat.sh
+# - /tmp/bootstrap-nat.service
 
 require_env() {
   local name="$1"
@@ -118,63 +119,11 @@ echo "Prevent cloud-init from overwriting netplan on first boot..."
 mkdir -p /etc/cloud/cloud.cfg.d
 echo 'network: {config: disabled}' > /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
 
-echo "Configuring NAT (PXE -> uplink) if uplink is present..."
-install -m 0755 /dev/stdin /usr/local/sbin/bootstrap-nat.sh <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-PXE_IFACE="${BOOTSTRAP_IFACE:-eth0}"
-
-# Determine uplink as the interface that currently has the default route.
-# DHCP on the uplink can be a little late; wait briefly so NAT becomes reliable.
-UPLINK_IFACE=""
-for _ in $(seq 1 60); do
-  UPLINK_IFACE="$(ip route show default 2>/dev/null | awk '{print $5}' | head -n1 || true)"
-  if [ -n "$UPLINK_IFACE" ]; then
-    break
-  fi
-  sleep 1
-done
-if [ -z "$UPLINK_IFACE" ]; then
-  echo "[bootstrap-nat] no default route after waiting; failing so systemd will retry"
-  exit 1
-fi
-if [ "$UPLINK_IFACE" = "$PXE_IFACE" ]; then
-  echo "[bootstrap-nat] default route is on $PXE_IFACE; refusing to NAT"
-  exit 0
-fi
-
-echo "[bootstrap-nat] enabling ip_forward and NAT: $PXE_IFACE -> $UPLINK_IFACE"
-sysctl -w net.ipv4.ip_forward=1 >/dev/null
-
-if ! iptables -t nat -C POSTROUTING -o "$UPLINK_IFACE" -j MASQUERADE 2>/dev/null; then
-  iptables -t nat -A POSTROUTING -o "$UPLINK_IFACE" -j MASQUERADE
-fi
-if ! iptables -C FORWARD -i "$PXE_IFACE" -o "$UPLINK_IFACE" -j ACCEPT 2>/dev/null; then
-  iptables -A FORWARD -i "$PXE_IFACE" -o "$UPLINK_IFACE" -j ACCEPT
-fi
-if ! iptables -C FORWARD -i "$UPLINK_IFACE" -o "$PXE_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; then
-  iptables -A FORWARD -i "$UPLINK_IFACE" -o "$PXE_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
-fi
-EOF
-
-cat > /etc/systemd/system/bootstrap-nat.service <<EOF
-[Unit]
-Description=Bootstrap appliance NAT (PXE network -> uplink)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-Environment=BOOTSTRAP_IFACE=${BOOTSTRAP_IFACE}
-ExecStart=/usr/local/sbin/bootstrap-nat.sh
-Restart=on-failure
-RestartSec=2
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
+echo "Installing NAT script and systemd service..."
+install -m 0755 /tmp/bootstrap-nat.sh /usr/local/sbin/bootstrap-nat.sh
+# Render the service file with the correct interface name
+sed "s|__BOOTSTRAP_IFACE__|${BOOTSTRAP_IFACE}|g" /tmp/bootstrap-nat.service > /etc/systemd/system/bootstrap-nat.service
+chmod 0644 /etc/systemd/system/bootstrap-nat.service
 
 echo "Enable services..."
 systemctl enable nginx

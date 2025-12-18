@@ -39,6 +39,28 @@ MINIPC_MAC="${3:?minipc_mac required (e.g. 00:11:22:33:44:55)}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# ─────────────────────────────────────────────────────────────
+# Helper: decrypt a SOPS-encrypted file if it exists
+# ─────────────────────────────────────────────────────────────
+decrypt_sops() {
+  local sops_file="$1"
+  local plain_file="$2"
+  local desc="$3"
+
+  if [ ! -f "${sops_file}" ]; then
+    return 1
+  fi
+
+  if ! command -v sops >/dev/null 2>&1; then
+    echo "sops not found but ${sops_file} exists; install sops or provide a plaintext file" >&2
+    exit 1
+  fi
+
+  echo "Decrypting SOPS ${desc} -> ${plain_file}"
+  sops -d "${sops_file}" > "${plain_file}"
+  chmod 0600 "${plain_file}"
+}
+
 OUT_DIR="${ROOT_DIR}/artifacts/bootstrap/${BOOTSTRAP_VERSION}"
 BUILD_BOOTSTRAP_DIR="${ROOT_DIR}/build/bootstrap"
 mkdir -p "${BUILD_BOOTSTRAP_DIR}"
@@ -77,27 +99,8 @@ SOPS_TALOSCONFIG="${SOPS_TALOSCONFIG_PATH:-${SOPS_TALOSCONFIG_DEFAULT}}"
 
 mkdir -p "${BUILD_BOOTSTRAP_DIR}"
 
-if [ -f "${SOPS_CONTROLPLANE}" ]; then
-  if command -v sops >/dev/null 2>&1; then
-    echo "Decrypting SOPS controlplane config -> ${PLAIN_CONTROLPLANE}"
-    sops -d "${SOPS_CONTROLPLANE}" > "${PLAIN_CONTROLPLANE}"
-    chmod 0600 "${PLAIN_CONTROLPLANE}"
-  else
-    echo "sops not found but ${SOPS_CONTROLPLANE} exists; install sops or provide MACHINECONFIG_PATH=/path/to/plaintext.yaml" >&2
-    exit 1
-  fi
-fi
-
-if [ -f "${SOPS_TALOSCONFIG}" ]; then
-  if command -v sops >/dev/null 2>&1; then
-    echo "Decrypting SOPS talosconfig -> ${PLAIN_TALOSCONFIG}"
-    sops -d "${SOPS_TALOSCONFIG}" > "${PLAIN_TALOSCONFIG}"
-    chmod 0600 "${PLAIN_TALOSCONFIG}"
-  else
-    echo "sops not found but ${SOPS_TALOSCONFIG} exists; install sops (or skip talosconfig serving)" >&2
-    exit 1
-  fi
-fi
+decrypt_sops "${SOPS_CONTROLPLANE}" "${PLAIN_CONTROLPLANE}" "controlplane config" || true
+decrypt_sops "${SOPS_TALOSCONFIG}" "${PLAIN_TALOSCONFIG}" "talosconfig" || true
 
 MACHINECONFIG_PATH="${MACHINECONFIG_PATH:-${PLAIN_CONTROLPLANE}}"
 TALOSCONFIG_PATH="${TALOSCONFIG_PATH:-${PLAIN_TALOSCONFIG}}"
@@ -121,12 +124,8 @@ packer build \
 
 RAW="${OUT_DIR}/bootstrap-pxe.raw"
 if [ ! -f "${RAW}" ]; then
-  # fallback to default vm_name if changed
-  RAW="$(ls -t "${OUT_DIR}"/*.raw | head -n1 || true)"
-fi
-
-if [ -z "${RAW}" ] || [ ! -f "${RAW}" ]; then
-  echo "Unable to locate built RAW image under: ${OUT_DIR}" >&2
+  echo "Unable to locate built RAW image: ${RAW}" >&2
+  echo "Contents of ${OUT_DIR}:" >&2
   ls -lah "${OUT_DIR}" >&2
   exit 1
 fi
