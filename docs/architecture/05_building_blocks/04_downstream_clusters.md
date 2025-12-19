@@ -13,7 +13,7 @@
 | **Lifecycle** | Managed by Cluster API on the Platform Cluster |
 | **Infrastructure** | VMs running on Harvester HCI |
 | **Operating System** | Talos Linux (immutable, API-driven) |
-| **Configuration** | Defined in Git, deployed via Argo CD |
+| **Configuration** | Defined in Git as **Crossplane Claims**, deployed via Argo CD |
 
 ## Cluster Topology
 
@@ -158,6 +158,7 @@ Downstream clusters consume services from the Platform Cluster:
 | **Zitadel (IDM)** | OIDC authentication for cluster access and apps |
 | **OpenBAO (Secrets)** | Dynamic secrets, TLS certificates via Vault Agent |
 | **Argo CD** | Workload sync (pull or push model) |
+| **Crossplane** | Hosts `PlatformService` claims to request standard apps (e.g., Prometheus, Zitadel) |
 
 ### Secrets Flow
 ```
