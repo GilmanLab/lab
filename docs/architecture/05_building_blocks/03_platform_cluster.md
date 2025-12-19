@@ -9,7 +9,7 @@ The **Platform Cluster** is the permanent, privileged Kubernetes cluster that ac
 
 | Function | Description |
 |:---|:---|
-| **Cluster Factory** | Runs Cluster API (CAPI) to provision and lifecycle-manage downstream Talos clusters on Harvester |
+| **Cluster Factory** | Runs Cluster API (CAPI) and **Crossplane** to provision and lifecycle-manage downstream clusters |
 | **GitOps Engine** | Hosts Argo CD, the source of truth for all declarative configurations |
 | **Identity Provider** | Runs Zitadel for centralized authentication (OIDC) |
 | **Secrets Management** | Runs OpenBAO (Vault fork) for secrets, PKI, and dynamic credentials |
@@ -80,6 +80,7 @@ Talos configures VLAN sub-interfaces to separate traffic logically.
 | **Cluster API (CAPI)** | Declarative cluster lifecycle management |
 | **CAPI Harvester Provider** | Creates VMs on Harvester for downstream clusters |
 | **CAPI Talos Provider** | Bootstraps Talos on provisioned VMs |
+| **Crossplane** | Hosts the `TenantCluster` XRD to abstract CAPI operations |
 | **Tinkerbell** | Bare metal provisioning (post-Genesis) |
 
 ## CAPI Integration
