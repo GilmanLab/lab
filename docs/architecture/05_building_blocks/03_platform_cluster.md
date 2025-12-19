@@ -29,6 +29,19 @@ The Platform Cluster is a **3-node Talos** cluster with a hybrid physical/virtua
 - **UM760 (Physical)**: Survives Harvester failures. If Harvester is down, the Platform Cluster retains quorum (1 of 3) and can orchestrate recovery
 - **Harvester VMs**: Provide HA without requiring additional physical hardware
 
+### Bootstrap Sequence
+
+The platform cluster is built in **4 phases**:
+
+| Phase | Description | Nodes |
+|:---|:---|:---|
+| **1. Seed** | Temporary Talos VM on NAS runs Tinkerbell | 1 (NAS VM) |
+| **2. Single-Node Platform** | UM760 provisioned via PXE, workloads migrated | 1 (UM760) |
+| **3. Harvester Online** | MS-02 nodes provisioned with Harvester HCI | HCI ready |
+| **4. Full Platform** | CP-2 and CP-3 VMs created on Harvester | 3 (HA) |
+
+For detailed bootstrap procedures, see `bootstrap/genesis/` runbooks.
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Platform Cluster                           │

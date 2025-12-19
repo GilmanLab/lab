@@ -42,7 +42,9 @@ This documentation describes a fully automated, GitOps-focused, multi-cluster Ta
 
 | Concept | Description |
 |:---|:---|
+| [Argo CD](08_concepts/argocd.md) | Hub-and-spoke GitOps, ApplicationSets |
 | [Control Plane](08_concepts/control_plane.md) | Crossplane unified API layer |
+| [Harvester](08_concepts/harvester.md) | HCI integration as managed cluster |
 | [Load Balancing](08_concepts/load_balancing.md) | BGP-based service exposure |
 | [Networking](08_concepts/networking.md) | VLAN architecture, Split Plane design |
 | [Observability](08_concepts/observability.md) | Prometheus, Grafana, alerting |
@@ -57,6 +59,18 @@ This documentation describes a fully automated, GitOps-focused, multi-cluster Ta
 | [ADR 001](09_design_decisions/001_use_bgp_loadbalancing.md) | BGP over Layer 2 for load balancing |
 | [ADR 002](09_design_decisions/002_networking_topology.md) | LACP bonding over physical segregation |
 | [ADR 003](09_design_decisions/003_vyos_gitops.md) | Ansible + GitHub Actions + Tailscale for VyOS management |
+| [ADR 004](09_design_decisions/004_argocd_hub_spoke.md) | Hub-and-spoke Argo CD over agent model |
+| [ADR 005](09_design_decisions/005_seed_bootstrap_strategy.md) | Minimal seed with raw manifests for bootstrap |
+| [ADR 006](09_design_decisions/006_harvester_managed_cluster.md) | Harvester as Argo CD managed cluster |
+
+### Appendices
+
+| Appendix | Description |
+|:---|:---|
+| [A. Repository Structure](appendices/A_repository_structure.md) | Monorepo layout and directory conventions |
+| [B. Bootstrap Procedure](appendices/B_bootstrap_procedure.md) | 4-phase, 18-step genesis bootstrap runbook |
+| [C. Argo CD Configuration](appendices/C_argocd_configuration.md) | ApplicationSets, cluster secrets, health checks |
+| [D. Harvester Configuration](appendices/D_harvester_configuration.md) | Network, storage, and VM CRD examples |
 
 ---
 

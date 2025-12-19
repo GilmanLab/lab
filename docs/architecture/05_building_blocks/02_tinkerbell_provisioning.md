@@ -9,10 +9,11 @@ Tinkerbell handles **Day Zero** operations — the initial bootstrap of physical
 
 | Target | What Tinkerbell Installs | Result |
 |:---|:---|:---|
-| **MS-02 (x3)** | Harvester OS | Nodes join the Harvester HCI cluster |
+| **VP6630** | VyOS (Packer-built image) | Lab router with VLANs and DHCP relay |
 | **UM760** | Talos Linux | Node joins the Platform Cluster |
+| **MS-02 (x3)** | Harvester OS | Nodes join the Harvester HCI cluster |
 
-After initial provisioning, Tinkerbell's role is complete. Ongoing lifecycle management is handled by Harvester (for HCI) and CAPI (for Kubernetes clusters).
+After initial provisioning, Tinkerbell's role is complete. Ongoing lifecycle management is handled by VyOS CI/CD (for router config), Harvester (for HCI), and CAPI (for Kubernetes clusters).
 
 ## Components
 
@@ -91,11 +92,15 @@ During the [Genesis bootstrap sequence](../06_runtime_view.md), Tinkerbell is de
 sequenceDiagram
     participant NAS as Seed Cluster (NAS)
     participant Tink as Tinkerbell
+    participant VyOS as VP6630 (VyOS)
     participant UM as UM760
     participant MS as MS-02 (x3)
 
     NAS->>Tink: Deploy Tinkerbell stack
-    UM->>Tink: PXE Boot
+    VyOS->>Tink: PXE Boot
+    Tink->>VyOS: Provision VyOS
+    Note over VyOS: Lab networking active
+    UM->>Tink: PXE Boot (via DHCP relay)
     Tink->>UM: Provision Talos
     Note over UM: Joins Platform Cluster
     NAS->>UM: Migrate Tinkerbell
@@ -104,7 +109,7 @@ sequenceDiagram
     Note over MS: Form Harvester HA Cluster
 ```
 
-After the MS-02 nodes are provisioned with Harvester, Tinkerbell's primary mission is complete. It remains available for disaster recovery (re-provisioning failed nodes).
+After the MS-02 nodes are provisioned with Harvester, Tinkerbell's primary mission is complete. It remains available for disaster recovery (re-provisioning failed nodes). VyOS configuration changes after initial provisioning are managed via the Ansible CI/CD pipeline.
 
 ## Operational Notes
 
@@ -116,7 +121,7 @@ To wipe and re-provision a node:
 
 ### Image Storage
 
-OS images (Harvester ISO, Talos raw image) are served via HTTP. The architecture uses a **NFS + HTTP container** pattern:
+OS images (VyOS raw image, Harvester ISO, Talos raw image) are served via HTTP. The architecture uses a **NFS + HTTP container** pattern:
 
 ```
 ┌─────────────┐      NFS       ┌──────────────────────────────────────┐
