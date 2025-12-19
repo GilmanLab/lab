@@ -145,9 +145,10 @@ repo/
 ### Dynamic Discovery Pattern
 The Platform Cluster's Argo CD uses an `ApplicationSet` with a Git directory generator to automatically discover and deploy workloads:
 
-1. Creates the downstream cluster (CAPI resources)
-2. Installs Argo CD Agent on the downstream cluster
+1. Creates the downstream cluster (CAPI resources via TenantCluster XR)
+2. TenantCluster XR composition automatically creates an Argo CD cluster Secret with the new cluster's kubeconfig
 3. ApplicationSet scans the cluster-specific folder and creates `Application` resources for each workload
+4. Argo CD applies manifests directly to the downstream cluster using the kubeconfig (hub-and-spoke model)
 
 ## Integration with Platform Services
 

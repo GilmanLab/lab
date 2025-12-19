@@ -10,7 +10,7 @@ The "Genesis" sequence bootstraps the entire infrastructure from bare metal to a
 
 ### Prerequisites
 - Physical hardware cabled and powered
-- VyOS gateway configured with VLANs and DHCP
+- VyOS image built with Packer (baked-in configuration)
 - Synology NAS available with Talos VM capability
 
 ### Sequence
@@ -20,45 +20,51 @@ sequenceDiagram
     participant NAS as Synology NAS
     participant Seed as Seed Cluster
     participant Tink as Tinkerbell
+    participant VyOS as VP6630 (VyOS)
     participant UM as UM760
     participant MS as MS-02 (x3)
     participant Harv as Harvester
+    participant Argo as Argo CD
     participant Plat as Platform Cluster
 
     Note over NAS: Phase 1: Seed
     NAS->>Seed: Bootstrap single-node Talos VM
+    Seed->>Argo: Deploy Argo CD (Helm)
     Seed->>Tink: Deploy Tinkerbell stack
+    VyOS->>Tink: PXE boot request
+    Tink->>VyOS: Provision VyOS (lab networking)
+    Note over VyOS: VLANs + DHCP relay active
 
-    Note over UM: Phase 2: Pivot
-    UM->>Tink: PXE boot request
+    Note over UM: Phase 2: Single-Node Platform
+    UM->>Tink: PXE boot request (via VyOS DHCP relay)
     Tink->>UM: Provision Talos
     UM->>Seed: Join cluster
     Seed->>UM: Migrate workloads (Tinkerbell, Argo)
     NAS->>NAS: Shutdown Seed VM
+    UM->>UM: Deploy Crossplane + XRDs
 
-    Note over MS: Phase 3: HCI Build-out
+    Note over MS: Phase 3: Harvester Online
     MS->>Tink: PXE boot (x3)
     Tink->>MS: Provision Harvester
     MS->>Harv: Form HA cluster
+    Argo->>Harv: Register as managed cluster
+    Argo->>Harv: Sync clusters/harvester/
 
-    Note over Plat: Phase 4: Platform HA
-    Harv->>Harv: Create 2 Talos VMs
-    Harv-->>UM: VMs join UM760
+    Note over Plat: Phase 4: Full Platform
+    Harv->>Harv: Create CP-2, CP-3 VMs
+    Harv-->>UM: VMs PXE boot and join
     UM->>Plat: 3-node Platform Cluster formed
-
-    Note over Plat: Phase 5: Steady State
-    Plat->>Plat: CAPI + Argo CD operational
+    Plat->>Plat: Deploy remaining services
 ```
 
 ### Phase Summary
 
 | Phase | Action | Result |
 |:---|:---|:---|
-| **1. Seed** | Bootstrap temporary Talos on NAS | Tinkerbell operational |
-| **2. Pivot** | Provision UM760, migrate from NAS | Seed on physical hardware |
-| **3. HCI** | Provision 3x MS-02 with Harvester | HCI cluster ready |
-| **4. Platform HA** | Add 2 Harvester VMs to UM760 | 3-node HA Platform Cluster |
-| **5. Steady State** | CAPI and Argo CD take over | Self-sustaining infrastructure |
+| **1. Seed** | Bootstrap temporary Talos on NAS, provision VyOS | Tinkerbell + Argo CD + VyOS networking operational |
+| **2. Single-Node Platform** | Provision UM760, migrate from NAS | Single-node platform with Crossplane |
+| **3. Harvester Online** | Provision 3x MS-02, register with Argo CD | HCI cluster managed by Argo CD |
+| **4. Full Platform** | Add 2 Harvester VMs to UM760 | 3-node HA Platform Cluster |
 
 ---
 
@@ -141,16 +147,14 @@ sequenceDiagram
     participant Dev as Developer
     participant Git as GitHub
     participant Argo as Argo CD (Platform)
-    participant Agent as Argo CD Agent
     participant K8s as Downstream Cluster
 
     Dev->>Git: Commit application manifest
     Git->>Argo: Webhook notification
     Argo->>Argo: ApplicationSet detects new app
-    Argo->>Agent: Push sync instruction
-    Agent->>K8s: Apply manifests
-    K8s-->>Agent: Resources created
-    Agent-->>Argo: Sync status: Healthy
+    Argo->>K8s: Apply manifests (via kubeconfig)
+    K8s-->>Argo: Resources created
+    Argo->>Argo: Report sync status: Healthy
 ```
 
 ### Sync Modes

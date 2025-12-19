@@ -79,11 +79,11 @@ This section describes the physical and virtual infrastructure topology — how 
 
 | Node | Operating System | Deployment Method |
 |:---|:---|:---|
+| **VP6630** | VyOS | Tinkerbell PXE (Packer-built image) |
 | **MS-02 (x3)** | Harvester (Elemental OS) | Tinkerbell PXE |
 | **UM760** | Talos Linux | Tinkerbell PXE |
 | **Platform VMs (x2)** | Talos Linux | CAPI + Harvester |
 | **Downstream VMs** | Talos Linux | CAPI + Harvester |
-| **VP6630** | VyOS | Manual install / GitOps config |
 | **Synology NAS** | DSM | Factory |
 
 ### Service Placement
@@ -95,6 +95,7 @@ This section describes the physical and virtual infrastructure topology — how 
 │  │  Argo CD │ Zitadel │ OpenBAO │ CAPI │ Tinkerbell │ Prometheus  │    │
 │  └─────────────────────────────────────────────────────────────────┘    │
 │        Runs on: UM760 (physical) + 2x Harvester VMs                     │
+│        Manages: Itself, Harvester, Downstream Clusters (hub-and-spoke)  │
 └─────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -103,6 +104,8 @@ This section describes the physical and virtual infrastructure topology — how 
 │  │  KubeVirt │ Longhorn │ Harvester UI (Embedded Rancher)         │    │
 │  └─────────────────────────────────────────────────────────────────┘    │
 │        Runs on: MS-02 x3 (bare metal)                                   │
+│        Managed by: Argo CD (registered as cluster via kubeconfig)       │
+│        Hosts: Platform VMs (CP-2, CP-3), Tenant cluster VMs             │
 └─────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -111,8 +114,65 @@ This section describes the physical and virtual infrastructure topology — how 
 │  │  Cilium │ Vault Agent │ Application Workloads                  │    │
 │  └─────────────────────────────────────────────────────────────────┘    │
 │        Runs on: Harvester VMs (ephemeral)                               │
+│        Managed by: Argo CD (auto-registered via TenantCluster XR)       │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Harvester as a Managed Cluster
+
+Harvester is unique in this architecture — it's a Kubernetes cluster, but serves as the HCI (Hyperconverged Infrastructure) layer rather than a workload cluster.
+
+### Why Harvester is Managed by Argo CD
+
+| Aspect | Rationale |
+|:---|:---|
+| **Configuration as Code** | Harvester networks, images, and VMs are defined in Git as CRDs |
+| **Bootstrap VMs** | Platform CP-2 and CP-3 VMs must be created before CAPI is available |
+| **Standalone VMs** | Non-containerized workloads (gaming, file servers) live permanently on Harvester |
+| **Hub-and-Spoke** | Single Argo CD instance manages all clusters uniformly |
+
+### Cluster Registration
+
+Harvester is registered with Argo CD during Phase 3 of bootstrap:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: harvester
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: cluster
+    lab.gilman.io/cluster-name: harvester
+type: Opaque
+stringData:
+  name: harvester
+  server: https://harvester.lab.local:6443
+  config: |
+    {
+      "tlsClientConfig": {
+        "caData": "...",
+        "certData": "...",
+        "keyData": "..."
+      }
+    }
+```
+
+### What Argo CD Manages on Harvester
+
+```
+clusters/harvester/
+├── config/
+│   ├── networks/           # ClusterNetwork / VlanConfig CRDs
+│   └── images/             # VirtualMachineImage CRDs (Talos, etc.)
+└── vms/
+    ├── platform/           # Platform CP-2, CP-3 (bootstrap phase)
+    └── standalone/         # Non-container workloads (gaming, NAS, etc.)
+```
+
+**Note**: Tenant cluster VMs are NOT managed via `clusters/harvester/`. They are created dynamically by CAPI when a TenantCluster XR is applied.
 
 ---
 
