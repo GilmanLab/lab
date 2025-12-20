@@ -70,8 +70,10 @@ jobs:
           chmod 600 /tmp/age-key.txt
 
       - name: Extract SSH public key
+        env:
+          SOPS_AGE_KEY_FILE: /tmp/age-key.txt
         run: |
-          sops --decrypt --age-key-file /tmp/age-key.txt \
+          sops --decrypt \
             --extract '["ssh_public_key"]' images/packer-ssh.sops.yaml > /tmp/ssh_key.pub
 
       - uses: hashicorp/setup-packer@v3.1.0
