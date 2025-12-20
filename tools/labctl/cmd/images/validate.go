@@ -44,35 +44,57 @@ func runValidate(_ *cobra.Command, _ []string) error {
 }
 
 func runValidateWithClient(client httpClient) error {
-	// Load and parse manifest (validates YAML syntax, regexes, and HTTPS requirement)
-	manifest, err := config.LoadManifest(validateManifest)
+	fmt.Printf("Validating manifest: %s\n", validateManifest)
+
+	// Load manifest without validation to collect all errors
+	manifest, err := config.LoadManifestRaw(validateManifest)
 	if err != nil {
 		return fmt.Errorf("load manifest: %w", err)
 	}
 
-	fmt.Printf("Validating manifest: %s\n", validateManifest)
 	fmt.Printf("Found %d image(s)\n\n", len(manifest.Spec.Images))
 
-	// Check all source URLs via HEAD requests
-	var errors []error
+	// Collect all errors
+	var allErrors []error
+
+	// Get all manifest validation errors
+	fmt.Println("Checking manifest structure...")
+	manifestErrors := manifest.ValidateAll()
+	for _, err := range manifestErrors {
+		fmt.Printf("  ERROR: %v\n", err)
+		allErrors = append(allErrors, err)
+	}
+	if len(manifestErrors) == 0 {
+		fmt.Println("  OK")
+	}
+	fmt.Println()
+
+	// Check all source URLs via HEAD requests (only for images with valid URLs)
+	fmt.Println("Checking source URLs...")
 	for _, img := range manifest.Spec.Images {
-		fmt.Printf("Checking %s... ", img.Name)
+		// Skip URL check if the image doesn't have a valid URL
+		if img.Source.URL == "" || img.Name == "" {
+			continue
+		}
+
+		fmt.Printf("  %s... ", img.Name)
 
 		if err := checkURL(context.Background(), client, img.Source.URL); err != nil {
-			errors = append(errors, fmt.Errorf("image %q: %w", img.Name, err))
+			allErrors = append(allErrors, fmt.Errorf("image %q URL check: %w", img.Name, err))
 			fmt.Println("FAILED")
-			fmt.Printf("  Error: %v\n", err)
+			fmt.Printf("    Error: %v\n", err)
 		} else {
 			fmt.Println("OK")
 		}
 	}
 
-	if len(errors) > 0 {
-		fmt.Printf("\nValidation failed with %d error(s)\n", len(errors))
-		return fmt.Errorf("validation failed with %d error(s)", len(errors))
+	fmt.Println()
+	if len(allErrors) > 0 {
+		fmt.Printf("Validation failed with %d error(s)\n", len(allErrors))
+		return fmt.Errorf("validation failed with %d error(s)", len(allErrors))
 	}
 
-	fmt.Println("\nAll validations passed")
+	fmt.Println("All validations passed")
 	return nil
 }
 
