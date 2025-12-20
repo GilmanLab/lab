@@ -306,6 +306,9 @@ on:
     branches: [main]
     paths:
       - 'images/**'
+  pull_request:
+    paths:
+      - 'images/**'
   workflow_dispatch:
     inputs:
       force:
@@ -318,8 +321,12 @@ on:
         default: false
 
 concurrency:
-  group: images-sync
+  group: images-sync-${{ github.ref }}
   cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
   sync:
@@ -344,6 +351,8 @@ jobs:
         run: |
           FLAGS=""
           if [ "${{ inputs.force }}" == "true" ]; then FLAGS="--force"; fi
+          # On PRs, run in dry-run mode (validate only)
+          if [ "${{ github.event_name }}" == "pull_request" ]; then FLAGS="--dry-run"; fi
 
           ./labctl images sync \
             --credentials images/e2.sops.yaml \
@@ -351,7 +360,7 @@ jobs:
             $FLAGS
 
       - name: Create PR if files changed
-        if: steps.sync.outputs.files_changed == 'true'
+        if: github.event_name == 'push' && steps.sync.outputs.files_changed == 'true'
         uses: peter-evans/create-pull-request@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -366,7 +375,7 @@ jobs:
           delete-branch: true
 
       - name: Prune Orphaned Images
-        if: inputs.prune == true
+        if: github.event_name != 'pull_request' && inputs.prune == true
         run: |
           ./labctl images prune \
             --credentials images/e2.sops.yaml \
@@ -383,15 +392,43 @@ on:
     branches: [main]
     paths:
       - 'infrastructure/network/vyos/packer/**'
+  pull_request:
+    paths:
+      - 'infrastructure/network/vyos/packer/**'
   workflow_dispatch:
 
 concurrency:
-  group: packer-vyos
+  group: packer-vyos-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  build:
+  # Validate on PRs (fast, no build)
+  validate:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-packer@v3.1.0
+        with:
+          version: '1.11.2'
+
+      - name: Packer Init
+        run: packer init infrastructure/network/vyos/packer
+
+      - name: Packer Validate
+        run: |
+          # Validate with dummy values (real values only needed for build)
+          packer validate \
+            -var "ssh_key_type=ssh-ed25519" \
+            -var "ssh_public_key=AAAA" \
+            -var "vyos_iso_checksum=sha256:0000000000000000000000000000000000000000000000000000000000000000" \
+            infrastructure/network/vyos/packer
+
+  # Build only on merge to main
+  build:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    needs: validate
     steps:
       - uses: actions/checkout@v4
 
@@ -402,18 +439,21 @@ jobs:
       - name: Build labctl
         run: go build -o labctl ./tools/labctl
 
+      - name: Install SOPS
+        run: |
+          curl -LO https://github.com/getsops/sops/releases/download/v3.9.2/sops-v3.9.2.linux.amd64
+          chmod +x sops-v3.9.2.linux.amd64
+          sudo mv sops-v3.9.2.linux.amd64 /usr/local/bin/sops
+
       - name: Write SOPS age key
         run: |
           echo "${{ secrets.SOPS_AGE_KEY }}" > /tmp/age-key.txt
           chmod 600 /tmp/age-key.txt
 
-      - name: Extract SSH keypair
+      - name: Extract SSH public key
         run: |
           sops --decrypt --age-key-file /tmp/age-key.txt \
             --extract '["ssh_public_key"]' images/packer-ssh.sops.yaml > /tmp/ssh_key.pub
-          sops --decrypt --age-key-file /tmp/age-key.txt \
-            --extract '["ssh_private_key"]' images/packer-ssh.sops.yaml > /tmp/ssh_key
-          chmod 600 /tmp/ssh_key
 
       - uses: hashicorp/setup-packer@v3.1.0
         with:
@@ -451,7 +491,7 @@ pull_request_rules:
       - label=automated
       - base=main
       - "#approved-reviews-by>=0"  # No approval required for bot PRs
-      - "check-success=Sync Images / sync"  # Format: Workflow Name / Job Name
+      - "check-success=Sync Images / sync"
     actions:
       merge:
         method: squash
@@ -460,6 +500,10 @@ pull_request_rules:
 
           {{ body }}
 ```
+
+**Check Name Format:** `Workflow Name / Job Name`
+- `Sync Images / sync` — images-sync.yml
+- `Build VyOS Image / validate` — packer-vyos.yml (PR validation)
 
 ## 9. Security
 
@@ -481,7 +525,7 @@ sops:
 
 ### SOPS-Encrypted SSH Keypair
 
-Used by Packer builds for VM provisioning. Generate once and store encrypted:
+Used by Packer builds for VM provisioning. The public key is baked into the image; the private key is stored for future use (e.g., post-build testing).
 
 ```bash
 # Generate keypair
@@ -503,7 +547,7 @@ sops --encrypt --in-place images/packer-ssh.sops.yaml
 ```yaml
 # images/packer-ssh.sops.yaml (encrypted)
 ssh_public_key: ENC[AES256_GCM,data:...,type:str]
-ssh_private_key: ENC[AES256_GCM,data:...,type:str]
+ssh_private_key: ENC[AES256_GCM,data:...,type:str]  # Optional: for future use
 sops:
     age:
         - recipient: age1...  # CI key
@@ -511,6 +555,8 @@ sops:
         - XXXX...             # Yubikey
     encrypted_regex: ^(ssh_public_key|ssh_private_key)$
 ```
+
+**Current Usage:** Only `ssh_public_key` is extracted during build. The private key is retained for potential future automation (e.g., post-build smoke tests).
 
 ```yaml
 # images/.sops.yaml
