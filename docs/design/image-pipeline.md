@@ -64,10 +64,7 @@ spec:
         artifact: output/vyos-lab.raw
       destination:
         path: vyos/vyos-gateway.raw
-      validation:
-        type: checksum
-        algorithm: sha256
-        # Checksum computed after build
+      # No validation block needed - checksum computed after build and stored in metadata
 
     # ISO passthrough (no transformation)
     - name: harvester-1.4.0
@@ -77,6 +74,7 @@ spec:
         checksum: sha256:...
       destination:
         path: harvester/harvester-1.4.0-amd64.iso
+      # No validation.expected needed - defaults to source.checksum when no decompress
 ```
 
 ```go
@@ -117,8 +115,10 @@ type Destination struct {
 }
 
 type Validation struct {
-    Algorithm string `yaml:"algorithm"` // "sha256" | "sha512"
-    Expected  string `yaml:"expected"`  // Required: post-processing checksum
+    Algorithm string `yaml:"algorithm"`          // "sha256" | "sha512" (default: sha256)
+    Expected  string `yaml:"expected,omitempty"` // Post-processing checksum
+    // If omitted: defaults to source.checksum (HTTP) or computed after build (Packer)
+    // Required when: decompress is used (checksum changes after decompression)
 }
 
 // e2.sops.yaml structure (decrypted)
@@ -279,9 +279,8 @@ For pre-built images available via HTTP/HTTPS:
   destination:
     path: talos/talos-1.9.1-amd64.raw
   validation:
-    type: checksum
     algorithm: sha256
-    expected: sha256:def456...  # Post-decompression checksum
+    expected: sha256:def456...  # Required when decompress is used
 ```
 
 #### Packer Sources
@@ -370,7 +369,7 @@ labctl images prune [flags]
 
 2. TRIGGER
    └─> GitHub Actions workflow triggered on:
-       - Push to main affecting images/** or infrastructure/*/packer/**
+       - Push to main affecting images/** or infrastructure/**/packer/**
        - Manual workflow dispatch
 
 3. ACQUISITION
@@ -418,6 +417,11 @@ labctl images prune [flags]
 - `source.checksum` is required for all HTTP sources (pre-download verification)
 - `validation.expected` is required when `decompress` is used (post-decompression verification)
 - Packer sources compute checksum after build (stored in metadata for future comparison)
+
+**Default Behavior for `validation.expected`:**
+- **HTTP without decompress**: Defaults to `source.checksum` (file unchanged after download)
+- **HTTP with decompress**: Must be explicitly specified (checksum changes after decompression)
+- **Packer**: Not applicable - checksum computed after build and stored in metadata
 
 **Checksum Workflow:**
 
@@ -485,7 +489,7 @@ Checksums are stored in the metadata JSON file, **not** derived from S3 ETags (w
    ├── No  → Image missing, proceed to acquire/upload
    └── Yes → Read metadata, compare checksum
              ├── Match    → Skip (already uploaded)
-             └── Mismatch → Re-acquire and upload (unless immutable)
+             └── Mismatch → Re-acquire and upload
 3. After upload, write metadata/<path>.json with computed checksum
 ```
 
