@@ -329,6 +329,12 @@ jobs:
           sudo containerlab deploy -t topology.clab.yml --reconfigure
         timeout-minutes: 10
 
+      - name: Initialize VyOS config
+        run: |
+          CONTAINER="clab-vyos-gateway-test-gateway"
+          sudo docker exec "${CONTAINER}" sh -c "modprobe br_netfilter || true"
+          sudo docker exec "${CONTAINER}" sh -c "timeout 60 python3 /usr/libexec/vyos/vyos-boot-config-loader.py /opt/vyatta/etc/config/config.boot || true"
+
       - name: Wait for VyOS boot
         run: |
           echo "Waiting for VyOS to boot..."

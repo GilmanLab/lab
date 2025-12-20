@@ -24,9 +24,6 @@ topology:
       binds:
         - config.boot:/opt/vyatta/etc/config/config.boot:ro,Z
         - /lib/modules:/lib/modules:ro
-      exec:
-        - sh -c "modprobe br_netfilter"
-        - sh -c "python3 /usr/libexec/vyos/vyos-boot-config-loader.py /opt/vyatta/etc/config/config.boot"
       cap-add:
         - NET_ADMIN
         - SYS_ADMIN
