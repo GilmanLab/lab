@@ -1,9 +1,27 @@
 package images
 
 import (
+	"compress/gzip"
+	"context"
+	"crypto/sha256"
+	"crypto/sha512"
+	"encoding/hex"
 	"fmt"
+	"hash"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/spf13/cobra"
+	"github.com/ulikunitz/xz"
+
+	"github.com/GilmanLab/lab/tools/labctl/internal/config"
+	"github.com/GilmanLab/lab/tools/labctl/internal/credentials"
+	"github.com/GilmanLab/lab/tools/labctl/internal/store"
+	"github.com/GilmanLab/lab/tools/labctl/internal/updater"
 )
 
 var syncCmd = &cobra.Command{
@@ -34,7 +52,344 @@ func init() {
 }
 
 func runSync(_ *cobra.Command, _ []string) error {
-	// TODO(HOM-20): Implement sync command
-	fmt.Println("sync command not yet implemented")
+	ctx := context.Background()
+
+	// Load manifest
+	manifest, err := config.LoadManifest(syncManifest)
+	if err != nil {
+		return fmt.Errorf("load manifest: %w", err)
+	}
+
+	fmt.Printf("Syncing images from manifest: %s\n", syncManifest)
+	fmt.Printf("Found %d image(s)\n\n", len(manifest.Spec.Images))
+
+	// Skip credentials and S3 client setup in dry-run mode
+	var client *store.S3Client
+	if !syncDryRun {
+		// Resolve credentials
+		creds, err := credentials.Resolve(credentials.ResolveOptions{
+			SOPSFile:   syncCredentials,
+			AgeKeyFile: syncSOPSAgeKeyFile,
+		})
+		if err != nil {
+			return fmt.Errorf("resolve credentials: %w", err)
+		}
+
+		// Create S3 client
+		client, err = store.NewS3Client(creds, store.WithContext(ctx))
+		if err != nil {
+			return fmt.Errorf("create S3 client: %w", err)
+		}
+	}
+
+	// Track if any files were changed (for GitHub Actions output)
+	filesChanged := false
+
+	// Process each image
+	for _, img := range manifest.Spec.Images {
+		changed, err := syncImage(ctx, client, img, syncDryRun, syncForce)
+		if err != nil {
+			return fmt.Errorf("sync image %q: %w", img.Name, err)
+		}
+		if changed {
+			filesChanged = true
+		}
+	}
+
+	// Write GitHub Actions output
+	if err := writeGitHubOutput("files_changed", fmt.Sprintf("%t", filesChanged)); err != nil {
+		// Log but don't fail - not running in GitHub Actions
+		fmt.Printf("Note: Could not write GitHub Actions output: %v\n", err)
+	}
+
+	fmt.Println("\nSync complete")
+	if filesChanged {
+		fmt.Println("Files were changed - PR may be needed")
+	}
+
 	return nil
+}
+
+func syncImage(ctx context.Context, client *store.S3Client, img config.Image, dryRun, force bool) (bool, error) {
+	fmt.Printf("Processing: %s\n", img.Name)
+
+	effectiveChecksum := img.EffectiveChecksum()
+
+	// Check if image already exists with matching checksum
+	if !dryRun && !force {
+		matches, err := client.ChecksumMatches(ctx, img.Destination, effectiveChecksum)
+		if err != nil {
+			return false, fmt.Errorf("check existing image: %w", err)
+		}
+		if matches {
+			fmt.Printf("  Skipping: checksum matches existing image\n")
+			return false, nil
+		}
+	}
+
+	if dryRun {
+		fmt.Printf("  Would download: %s\n", img.Source.URL)
+		fmt.Printf("  Would upload to: %s\n", store.ImageKey(img.Destination))
+		if img.UpdateFile != nil {
+			fmt.Printf("  Would update file: %s\n", img.UpdateFile.Path)
+		}
+		return false, nil
+	}
+
+	// Download source image to temp file
+	fmt.Printf("  Downloading from: %s\n", img.Source.URL)
+	tempFile, size, err := downloadToTemp(ctx, img.Source.URL)
+	if err != nil {
+		return false, fmt.Errorf("download: %w", err)
+	}
+	defer func() {
+		_ = tempFile.Close()
+		_ = os.Remove(tempFile.Name())
+	}()
+
+	// Verify source checksum
+	fmt.Printf("  Verifying source checksum...\n")
+	if _, err := tempFile.Seek(0, 0); err != nil {
+		return false, fmt.Errorf("seek temp file: %w", err)
+	}
+	if err := verifyChecksum(tempFile, img.Source.Checksum); err != nil {
+		return false, fmt.Errorf("source checksum verification: %w", err)
+	}
+
+	// Decompress if needed
+	var uploadFile *os.File
+	var uploadSize int64
+	if img.Source.Decompress != "" {
+		fmt.Printf("  Decompressing (%s)...\n", img.Source.Decompress)
+		if _, err := tempFile.Seek(0, 0); err != nil {
+			return false, fmt.Errorf("seek temp file: %w", err)
+		}
+		decompFile, decompSize, err := decompress(tempFile, img.Source.Decompress)
+		if err != nil {
+			return false, fmt.Errorf("decompress: %w", err)
+		}
+		defer func() {
+			_ = decompFile.Close()
+			_ = os.Remove(decompFile.Name())
+		}()
+
+		// Verify post-decompression checksum if validation is specified
+		if img.Validation != nil && img.Validation.Expected != "" {
+			fmt.Printf("  Verifying decompressed checksum...\n")
+			if _, err := decompFile.Seek(0, 0); err != nil {
+				return false, fmt.Errorf("seek decompressed file: %w", err)
+			}
+			if err := verifyChecksum(decompFile, img.Validation.Expected); err != nil {
+				return false, fmt.Errorf("decompressed checksum verification: %w", err)
+			}
+		}
+
+		uploadFile = decompFile
+		uploadSize = decompSize
+	} else {
+		uploadFile = tempFile
+		uploadSize = size
+	}
+
+	// Upload to e2
+	if _, err := uploadFile.Seek(0, 0); err != nil {
+		return false, fmt.Errorf("seek upload file: %w", err)
+	}
+	imageKey := store.ImageKey(img.Destination)
+	fmt.Printf("  Uploading to: %s (%s)\n", imageKey, formatSize(uploadSize))
+	if err := client.Upload(ctx, imageKey, uploadFile, uploadSize); err != nil {
+		return false, fmt.Errorf("upload: %w", err)
+	}
+
+	// Write metadata
+	metadata := &store.ImageMetadata{
+		Name:       img.Name,
+		Checksum:   effectiveChecksum,
+		Size:       uploadSize,
+		UploadedAt: time.Now().UTC(),
+		Source: store.SourceMetadata{
+			Type: "http",
+			URL:  img.Source.URL,
+		},
+	}
+	if err := client.PutMetadata(ctx, img.Destination, metadata); err != nil {
+		return false, fmt.Errorf("write metadata: %w", err)
+	}
+
+	// Apply file updates if specified
+	filesChanged := false
+	if img.UpdateFile != nil {
+		fmt.Printf("  Updating file: %s\n", img.UpdateFile.Path)
+
+		replacements := make([]updater.Replacement, len(img.UpdateFile.Replacements))
+		for i, r := range img.UpdateFile.Replacements {
+			replacements[i] = updater.Replacement{
+				Pattern: r.Pattern,
+				Value:   r.Value,
+			}
+		}
+
+		data := updater.TemplateData{
+			Source: updater.SourceData{
+				URL:      img.Source.URL,
+				Checksum: img.Source.Checksum,
+			},
+		}
+
+		fileUpdater, err := updater.New(replacements, data)
+		if err != nil {
+			return false, fmt.Errorf("create file updater: %w", err)
+		}
+
+		modified, err := fileUpdater.UpdateFile(img.UpdateFile.Path)
+		if err != nil {
+			return false, fmt.Errorf("update file: %w", err)
+		}
+
+		if modified {
+			fmt.Printf("  File updated: %s\n", img.UpdateFile.Path)
+			filesChanged = true
+		} else {
+			fmt.Printf("  File unchanged: %s\n", img.UpdateFile.Path)
+		}
+	}
+
+	fmt.Printf("  Done\n")
+	return filesChanged, nil
+}
+
+func downloadToTemp(ctx context.Context, url string) (*os.File, int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+	if err != nil {
+		return nil, 0, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("User-Agent", "labctl/1.0")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("HTTP request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, 0, fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
+	}
+
+	tempFile, err := os.CreateTemp("", "labctl-download-*")
+	if err != nil {
+		return nil, 0, fmt.Errorf("create temp file: %w", err)
+	}
+
+	size, err := io.Copy(tempFile, resp.Body)
+	if err != nil {
+		_ = tempFile.Close()
+		_ = os.Remove(tempFile.Name())
+		return nil, 0, fmt.Errorf("write to temp file: %w", err)
+	}
+
+	return tempFile, size, nil
+}
+
+func verifyChecksum(r io.Reader, expected string) error {
+	// Parse expected checksum format: "sha256:abc123..." or "sha512:..."
+	parts := strings.SplitN(expected, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid checksum format: %s", expected)
+	}
+
+	algorithm := parts[0]
+	expectedHash := parts[1]
+
+	var h hash.Hash
+	switch algorithm {
+	case "sha256":
+		h = sha256.New()
+	case "sha512":
+		h = sha512.New()
+	default:
+		return fmt.Errorf("unsupported hash algorithm: %s", algorithm)
+	}
+
+	if _, err := io.Copy(h, r); err != nil {
+		return fmt.Errorf("compute hash: %w", err)
+	}
+
+	actual := hex.EncodeToString(h.Sum(nil))
+	if actual != expectedHash {
+		return fmt.Errorf("checksum mismatch: expected %s, got %s", expectedHash, actual)
+	}
+
+	return nil
+}
+
+// maxDecompressedSize limits decompressed file size to 50GB to prevent decompression bombs.
+const maxDecompressedSize = 50 * 1024 * 1024 * 1024
+
+func decompress(r io.Reader, format string) (*os.File, int64, error) {
+	var reader io.Reader
+	var cleanup func()
+
+	switch format {
+	case "xz":
+		xzReader, err := xz.NewReader(r)
+		if err != nil {
+			return nil, 0, fmt.Errorf("create xz reader: %w", err)
+		}
+		reader = xzReader
+	case "gzip":
+		gzReader, err := gzip.NewReader(r)
+		if err != nil {
+			return nil, 0, fmt.Errorf("create gzip reader: %w", err)
+		}
+		reader = gzReader
+		cleanup = func() { _ = gzReader.Close() }
+	case "zstd":
+		zstdReader, err := zstd.NewReader(r)
+		if err != nil {
+			return nil, 0, fmt.Errorf("create zstd reader: %w", err)
+		}
+		reader = zstdReader
+		cleanup = func() { zstdReader.Close() }
+	default:
+		return nil, 0, fmt.Errorf("unsupported decompression format: %s", format)
+	}
+
+	// Wrap with a limit reader to prevent decompression bombs
+	limitedReader := io.LimitReader(reader, maxDecompressedSize)
+
+	tempFile, err := os.CreateTemp("", "labctl-decompress-*")
+	if err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		return nil, 0, fmt.Errorf("create temp file: %w", err)
+	}
+
+	size, err := io.Copy(tempFile, limitedReader)
+	if cleanup != nil {
+		cleanup()
+	}
+	if err != nil {
+		_ = tempFile.Close()
+		_ = os.Remove(tempFile.Name())
+		return nil, 0, fmt.Errorf("decompress to temp file: %w", err)
+	}
+
+	return tempFile, size, nil
+}
+
+func writeGitHubOutput(name, value string) error {
+	outputFile := os.Getenv("GITHUB_OUTPUT")
+	if outputFile == "" {
+		return fmt.Errorf("GITHUB_OUTPUT not set")
+	}
+
+	f, err := os.OpenFile(outputFile, os.O_APPEND|os.O_WRONLY, 0o644) //nolint:gosec // G304: Path from env
+	if err != nil {
+		return fmt.Errorf("open GITHUB_OUTPUT: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	_, err = fmt.Fprintf(f, "%s=%s\n", name, value)
+	return err
 }
