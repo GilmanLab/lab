@@ -18,6 +18,19 @@ import (
 	labcreds "github.com/GilmanLab/lab/tools/labctl/internal/credentials"
 )
 
+// Client defines the storage operations used by commands.
+// This interface enables dependency injection for testing.
+type Client interface {
+	Upload(ctx context.Context, key string, body io.Reader, size int64) error
+	Download(ctx context.Context, key string) (io.ReadCloser, error)
+	Exists(ctx context.Context, key string) (bool, error)
+	List(ctx context.Context, prefix string) ([]string, error)
+	Delete(ctx context.Context, key string) error
+	GetMetadata(ctx context.Context, imagePath string) (*ImageMetadata, error)
+	PutMetadata(ctx context.Context, imagePath string, metadata *ImageMetadata) error
+	ChecksumMatches(ctx context.Context, imagePath, expectedChecksum string) (bool, error)
+}
+
 // ImageMetadata represents metadata stored alongside each image.
 type ImageMetadata struct {
 	Name       string         `json:"name"`

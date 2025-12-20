@@ -64,6 +64,12 @@ func runUpload(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("create S3 client: %w", err)
 	}
 
+	return runUploadWithClient(ctx, client)
+}
+
+// runUploadWithClient performs the upload using the provided store client.
+// This function enables dependency injection for testing.
+func runUploadWithClient(ctx context.Context, client store.Client) error {
 	// Get file info
 	info, err := os.Stat(uploadSource)
 	if err != nil {

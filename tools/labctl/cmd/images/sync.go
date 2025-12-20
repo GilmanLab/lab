@@ -110,7 +110,7 @@ func runSync(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func syncImage(ctx context.Context, client *store.S3Client, img config.Image, dryRun, force bool) (bool, error) {
+func syncImage(ctx context.Context, client store.Client, img config.Image, dryRun, force bool) (bool, error) {
 	fmt.Printf("Processing: %s\n", img.Name)
 
 	effectiveChecksum := img.EffectiveChecksum()

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/GilmanLab/lab/tools/labctl/internal/config"
 )
 
 func TestVerifyChecksum(t *testing.T) {
@@ -133,6 +136,100 @@ func TestDownloadToTemp(t *testing.T) {
 }
 
 func TestSyncImage(t *testing.T) {
+	t.Run("skips when checksum matches", func(t *testing.T) {
+		client := &mockStoreClient{
+			checksumMatchFunc: func(_ context.Context, _ string, _ string) (bool, error) {
+				return true, nil // Checksum matches
+			},
+		}
+
+		img := config.Image{
+			Name:        "test-image",
+			Destination: "test/test.iso",
+			Source: config.Source{
+				URL:      "https://example.com/test.iso",
+				Checksum: "sha256:abc123",
+			},
+		}
+
+		changed, err := syncImage(context.Background(), client, img, false, false)
+
+		require.NoError(t, err)
+		assert.False(t, changed)
+		assert.Empty(t, client.uploadedKeys) // No upload occurred
+	})
+
+	t.Run("dry run mode", func(t *testing.T) {
+		client := &mockStoreClient{}
+
+		img := config.Image{
+			Name:        "test-image",
+			Destination: "test/test.iso",
+			Source: config.Source{
+				URL:      "https://example.com/test.iso",
+				Checksum: "sha256:abc123",
+			},
+		}
+
+		changed, err := syncImage(context.Background(), client, img, true, false)
+
+		require.NoError(t, err)
+		assert.False(t, changed)
+		assert.Empty(t, client.uploadedKeys)
+	})
+
+	t.Run("force ignores checksum match", func(t *testing.T) {
+		// Force mode should skip checksum check entirely
+		// This test verifies that with force=true, we don't even call ChecksumMatches
+		checksumChecked := false
+		client := &mockStoreClient{
+			checksumMatchFunc: func(_ context.Context, _ string, _ string) (bool, error) {
+				checksumChecked = true
+				return true, nil
+			},
+		}
+
+		img := config.Image{
+			Name:        "test-image",
+			Destination: "test/test.iso",
+			Source: config.Source{
+				URL:      "https://example.com/test.iso",
+				Checksum: "sha256:abc123",
+			},
+		}
+
+		// With force=true and dryRun=true, it should show what would be done
+		// without checking checksum
+		_, err := syncImage(context.Background(), client, img, true, true)
+
+		require.NoError(t, err)
+		assert.False(t, checksumChecked) // Should not check checksum with force
+	})
+
+	t.Run("checksum check error", func(t *testing.T) {
+		client := &mockStoreClient{
+			checksumMatchFunc: func(_ context.Context, _ string, _ string) (bool, error) {
+				return false, errors.New("connection failed")
+			},
+		}
+
+		img := config.Image{
+			Name:        "test-image",
+			Destination: "test/test.iso",
+			Source: config.Source{
+				URL:      "https://example.com/test.iso",
+				Checksum: "sha256:abc123",
+			},
+		}
+
+		_, err := syncImage(context.Background(), client, img, false, false)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "check existing image")
+	})
+}
+
+func TestRunSync(t *testing.T) {
 	// Save and restore globals
 	origDryRun := syncDryRun
 	origForce := syncForce
@@ -170,5 +267,63 @@ spec:
 		// because it never actually tries to create a client
 		err = runSync(nil, nil)
 		assert.NoError(t, err)
+	})
+
+	t.Run("manifest file not found", func(t *testing.T) {
+		syncManifest = "/nonexistent/path/images.yaml"
+		syncDryRun = false
+		syncForce = false
+
+		err := runSync(nil, nil)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "load manifest")
+	})
+
+	t.Run("invalid manifest YAML", func(t *testing.T) {
+		dir := t.TempDir()
+		manifestPath := filepath.Join(dir, "images.yaml")
+		err := os.WriteFile(manifestPath, []byte("not: valid: yaml: ["), 0o644) //nolint:gosec
+		require.NoError(t, err)
+
+		syncManifest = manifestPath
+		syncDryRun = false
+		syncForce = false
+
+		err = runSync(nil, nil)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "load manifest")
+	})
+}
+
+func TestWriteGitHubOutput(t *testing.T) {
+	t.Run("writes output when GITHUB_OUTPUT is set", func(t *testing.T) {
+		dir := t.TempDir()
+		outputFile := filepath.Join(dir, "github_output")
+
+		// Create the file first
+		err := os.WriteFile(outputFile, []byte{}, 0o644) //nolint:gosec
+		require.NoError(t, err)
+
+		// Set environment variable
+		t.Setenv("GITHUB_OUTPUT", outputFile)
+
+		err = writeGitHubOutput("test_key", "test_value")
+		require.NoError(t, err)
+
+		// Verify content
+		content, err := os.ReadFile(outputFile) //nolint:gosec
+		require.NoError(t, err)
+		assert.Contains(t, string(content), "test_key=test_value")
+	})
+
+	t.Run("returns error when GITHUB_OUTPUT not set", func(t *testing.T) {
+		t.Setenv("GITHUB_OUTPUT", "")
+
+		err := writeGitHubOutput("key", "value")
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "GITHUB_OUTPUT not set")
 	})
 }

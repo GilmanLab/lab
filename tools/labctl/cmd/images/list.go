@@ -3,6 +3,7 @@ package images
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -48,6 +49,12 @@ func runList(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("create S3 client: %w", err)
 	}
 
+	return runListWithClient(ctx, client, os.Stdout)
+}
+
+// runListWithClient lists images using the provided store client.
+// This function enables dependency injection for testing.
+func runListWithClient(ctx context.Context, client store.Client, out io.Writer) error {
 	// List all images
 	keys, err := client.List(ctx, "images/")
 	if err != nil {
@@ -55,12 +62,12 @@ func runList(_ *cobra.Command, _ []string) error {
 	}
 
 	if len(keys) == 0 {
-		fmt.Println("No images found")
+		_, _ = fmt.Fprintln(out, "No images found")
 		return nil
 	}
 
 	// Create tabwriter for formatted output
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(w, "NAME\tPATH\tSIZE\tCHECKSUM\tUPLOADED")
 	_, _ = fmt.Fprintln(w, "----\t----\t----\t--------\t--------")
 

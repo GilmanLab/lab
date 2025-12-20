@@ -46,12 +46,6 @@ func runPrune(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("load manifest: %w", err)
 	}
 
-	// Build set of expected destinations from manifest
-	expected := make(map[string]bool)
-	for _, img := range manifest.Spec.Images {
-		expected[img.Destination] = true
-	}
-
 	// Resolve credentials
 	creds, err := credentials.Resolve(credentials.ResolveOptions{
 		SOPSFile:   pruneCredentials,
@@ -65,6 +59,18 @@ func runPrune(_ *cobra.Command, _ []string) error {
 	client, err := store.NewS3Client(creds, store.WithContext(ctx))
 	if err != nil {
 		return fmt.Errorf("create S3 client: %w", err)
+	}
+
+	return runPruneWithClient(ctx, client, manifest, pruneDryRun)
+}
+
+// runPruneWithClient performs the prune operation using the provided store client.
+// This function enables dependency injection for testing.
+func runPruneWithClient(ctx context.Context, client store.Client, manifest *config.ImageManifest, dryRun bool) error {
+	// Build set of expected destinations from manifest
+	expected := make(map[string]bool)
+	for _, img := range manifest.Spec.Images {
+		expected[img.Destination] = true
 	}
 
 	// List all images in storage
@@ -97,7 +103,7 @@ func runPrune(_ *cobra.Command, _ []string) error {
 	// Report and optionally delete orphaned images
 	fmt.Printf("Found %d orphaned image(s):\n", len(orphaned))
 	for _, dest := range orphaned {
-		if pruneDryRun {
+		if dryRun {
 			fmt.Printf("  Would remove: %s\n", dest)
 		} else {
 			fmt.Printf("  Removing: %s\n", dest)
@@ -115,7 +121,7 @@ func runPrune(_ *cobra.Command, _ []string) error {
 		}
 	}
 
-	if pruneDryRun {
+	if dryRun {
 		fmt.Printf("\nDry run: no changes made\n")
 	} else {
 		fmt.Printf("\nRemoved %d orphaned image(s)\n", len(orphaned))
