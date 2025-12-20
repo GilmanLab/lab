@@ -341,18 +341,25 @@ jobs:
       - name: Build labctl
         run: go build -o labctl ./tools/labctl
 
+      # Skip SOPS on PRs (dry-run doesn't need credentials)
       - name: Write SOPS age key
+        if: github.event_name != 'pull_request'
         run: |
           echo "${{ secrets.SOPS_AGE_KEY }}" > /tmp/age-key.txt
           chmod 600 /tmp/age-key.txt
 
+      # PR: validate manifest only (no credentials needed)
+      - name: Validate Manifest (PR)
+        if: github.event_name == 'pull_request'
+        run: ./labctl images validate
+
+      # Push/dispatch: full sync with credentials
       - name: Sync Images
+        if: github.event_name != 'pull_request'
         id: sync
         run: |
           FLAGS=""
           if [ "${{ inputs.force }}" == "true" ]; then FLAGS="--force"; fi
-          # On PRs, run in dry-run mode (validate only)
-          if [ "${{ github.event_name }}" == "pull_request" ]; then FLAGS="--dry-run"; fi
 
           ./labctl images sync \
             --credentials images/e2.sops.yaml \
