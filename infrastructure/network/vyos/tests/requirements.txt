@@ -1,0 +1,3 @@
+# VyOS Gateway Integration Test Dependencies
+scrapli[ssh2,community]==2024.7.30
+pytest>=8.0.0

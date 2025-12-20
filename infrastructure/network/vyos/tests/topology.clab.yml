@@ -1,0 +1,112 @@
+# Containerlab Topology for VyOS Gateway Integration Tests
+#
+# This topology creates a minimal lab environment to test the VyOS gateway
+# configuration. It simulates key network segments with Linux clients.
+#
+# Interface Mapping:
+#   eth0 - Containerlab management (reserved)
+#   eth4 - WAN interface (production mapping)
+#   eth5 - Trunk interface (production mapping)
+#
+# This topology keeps the production interface layout and uses a VLAN-aware
+# trunk so tests exercise the real gateway configuration.
+
+name: vyos-gateway-test
+
+topology:
+  nodes:
+    # VyOS Gateway under test
+    gateway:
+      kind: linux
+      image: vyos-gateway:test
+      # Run with systemd and extra capabilities for VyOS functionality
+      cmd: /sbin/init
+      binds:
+        - config.boot:/opt/vyatta/etc/config/config.boot:ro,Z
+        - /lib/modules:/lib/modules:ro
+      exec:
+        - sh -c "modprobe br_netfilter"
+        - sh -c "python3 /usr/libexec/vyos/vyos-boot-config-loader.py /opt/vyatta/etc/config/config.boot"
+      cap-add:
+        - NET_ADMIN
+        - SYS_ADMIN
+        - SYS_MODULE
+
+    # Trunk switch for VLAN-tagged lab networks
+    trunk-switch:
+      kind: linux
+      image: alpine:latest
+      exec:
+        - sh -c "ip link add br0 type bridge && ip link set br0 up"
+        - sh -c "for iface in eth1 eth2 eth3 eth4 eth5 eth6 eth7; do ip link set $iface up && ip link set $iface master br0; done"
+
+    # WAN-side client (simulates home network / upstream)
+    wan-client:
+      kind: linux
+      image: alpine:latest
+      exec:
+        - sh -c "ip addr add 192.168.0.100/24 dev eth1 && ip link set eth1 up"
+        - ip route replace default via 192.168.0.2
+
+    # Management network client (VLAN 10 simulation)
+    mgmt-client:
+      kind: linux
+      image: alpine:latest
+      exec:
+        - sh -c "ip link set eth1 up && ip link add link eth1 name eth1.10 type vlan id 10 && ip addr add 10.10.10.100/24 dev eth1.10 && ip link set eth1.10 up"
+        - ip route replace default via 10.10.10.1
+
+    # Provisioning network client (VLAN 20 simulation)
+    prov-client:
+      kind: linux
+      image: alpine:latest
+      exec:
+        - sh -c "ip link set eth1 up && ip link add link eth1 name eth1.20 type vlan id 20 && ip addr add 10.10.20.100/24 dev eth1.20 && ip link set eth1.20 up"
+        - ip route replace default via 10.10.20.1
+
+    # Platform network client (VLAN 30 simulation)
+    platform-client:
+      kind: linux
+      image: alpine:latest
+      exec:
+        - sh -c "ip link set eth1 up && ip link add link eth1 name eth1.30 type vlan id 30 && ip addr add 10.10.30.100/24 dev eth1.30 && ip link set eth1.30 up"
+        - ip route replace default via 10.10.30.1
+
+    # Tenant cluster network client (VLAN 40 simulation)
+    cluster-client:
+      kind: linux
+      image: alpine:latest
+      exec:
+        - sh -c "ip link set eth1 up && ip link add link eth1 name eth1.40 type vlan id 40 && ip addr add 10.10.40.100/24 dev eth1.40 && ip link set eth1.40 up"
+        - ip route replace default via 10.10.40.1
+
+    # Service VIP network client (VLAN 50 simulation)
+    service-client:
+      kind: linux
+      image: alpine:latest
+      exec:
+        - sh -c "ip link set eth1 up && ip link add link eth1 name eth1.50 type vlan id 50 && ip addr add 10.10.50.100/24 dev eth1.50 && ip link set eth1.50 up"
+        - ip route replace default via 10.10.50.1
+
+    # Storage network client (VLAN 60 simulation)
+    storage-client:
+      kind: linux
+      image: alpine:latest
+      exec:
+        - sh -c "ip link set eth1 up && ip link add link eth1 name eth1.60 type vlan id 60 && ip addr add 10.10.60.100/24 dev eth1.60 && ip link set eth1.60 up"
+        - ip route replace default via 10.10.60.1
+
+  links:
+    # WAN connection (gateway eth4 <-> wan-client eth1)
+    - endpoints: ["gateway:eth4", "wan-client:eth1"]
+
+    # Trunk connection (gateway eth5 <-> trunk-switch eth1)
+    - endpoints: ["gateway:eth5", "trunk-switch:eth1"]
+
+    # VLAN clients connected to trunk-switch
+    - endpoints: ["trunk-switch:eth2", "mgmt-client:eth1"]
+    - endpoints: ["trunk-switch:eth3", "prov-client:eth1"]
+    - endpoints: ["trunk-switch:eth4", "platform-client:eth1"]
+    - endpoints: ["trunk-switch:eth5", "cluster-client:eth1"]
+    - endpoints: ["trunk-switch:eth6", "service-client:eth1"]
+    - endpoints: ["trunk-switch:eth7", "storage-client:eth1"]
