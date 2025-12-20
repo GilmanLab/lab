@@ -4,7 +4,7 @@ run:
 version: "2"
 
 linters:
-  disable-all: true
+  default: none
   enable:
     - govet
     - staticcheck
@@ -65,7 +65,9 @@ linters:
         - name: waitgroup-by-value
         - name: atomic
 
+  exclusions:
+    presets: []
+
 issues:
-  exclude-use-default: false
   max-issues-per-linter: 0
   max-same-issues: 0
