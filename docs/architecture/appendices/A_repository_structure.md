@@ -209,7 +209,7 @@ lab/
     │
     ├── genesis/                          # Runbooks and scripts
     │   ├── README.md                     # Overview and prerequisites
-    │   ├── 01-build-vyos-image.md        # Build VyOS image with Packer
+    │   ├── 01-build-vyos-image.md        # Build VyOS image with vyos-build
     │   ├── 02-seed-cluster.md            # Create Talos VM on NAS
     │   ├── 03-deploy-argocd.md           # Manual Argo CD install
     │   ├── 04-apply-bootstrap.md         # Apply bootstrap Application
@@ -220,7 +220,7 @@ lab/
     │   ├── 09-provision-harvester.md     # Tinkerbell provisions MS-02s
     │   ├── 10-expand-platform.md         # Add CP-2, CP-3 VMs
     │   └── scripts/
-    │       ├── build-vyos-image.sh       # Runs Packer to build VyOS image
+    │       ├── build-vyos-image.sh       # Runs vyos-build to create VyOS image
     │       ├── generate-talos-config.sh  # Runs talhelper
     │       ├── create-seed-vm.sh         # Creates Talos VM on NAS
     │       └── install-argocd.sh         # Helm install Argo CD
