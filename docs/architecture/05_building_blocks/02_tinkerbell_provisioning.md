@@ -9,7 +9,7 @@ Tinkerbell handles **Day Zero** operations — the initial bootstrap of physical
 
 | Target | What Tinkerbell Installs | Result |
 |:---|:---|:---|
-| **VP6630** | VyOS (Packer-built image) | Lab router with VLANs and DHCP relay |
+| **VP6630** | VyOS (vyos-build image) | Lab router with VLANs and DHCP relay |
 | **UM760** | Talos Linux | Node joins the Platform Cluster |
 | **MS-02 (x3)** | Harvester OS | Nodes join the Harvester HCI cluster |
 

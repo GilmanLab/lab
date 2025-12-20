@@ -28,6 +28,7 @@ lab/
 ├── .github/
 │   └── workflows/
 │       ├── crossplane-build.yml          # Build Crossplane packages on tag
+│       ├── vyos-build.yml                # Build VyOS image (vyos-build)
 │       ├── vyos-validate.yml             # PR validation for VyOS
 │       └── vyos-deploy.yml               # Deploy VyOS on merge
 │
@@ -41,13 +42,11 @@ lab/
 │   │   └── vyos/
 │   │       ├── configs/
 │   │       │   └── gateway.conf
-│   │       ├── packer/
-│   │       │   ├── vyos.pkr.hcl              # Packer template for VyOS image
-│   │       │   ├── variables.pkr.hcl         # Packer variables
-│   │       │   ├── http/
-│   │       │   │   └── preseed.cfg           # VyOS preseed configuration
+│   │       ├── vyos-build/
+│   │       │   ├── build-flavors/
+│   │       │   │   └── gateway.toml          # Build flavor with baked-in config
 │   │       │   └── scripts/
-│   │       │       └── provision.sh          # Post-install provisioning script
+│   │       │       └── generate-flavor.sh    # Injects SSH credentials
 │   │       └── ansible/
 │   │           ├── playbooks/
 │   │           │   └── deploy.yml
@@ -207,7 +206,7 @@ lab/
     │
     ├── genesis/                          # Runbooks and scripts
     │   ├── README.md                     # Overview and prerequisites
-    │   ├── 01-build-vyos-image.md        # Build VyOS image with Packer
+    │   ├── 01-build-vyos-image.md        # Build VyOS image with vyos-build
     │   ├── 02-seed-cluster.md            # Create Talos VM on NAS
     │   ├── 03-deploy-argocd.md           # Manual Argo CD install
     │   ├── 04-apply-bootstrap.md         # Apply bootstrap Application
@@ -218,7 +217,7 @@ lab/
     │   ├── 09-provision-harvester.md     # Tinkerbell provisions MS-02s
     │   ├── 10-expand-platform.md         # Add CP-2, CP-3 VMs
     │   └── scripts/
-    │       ├── build-vyos-image.sh       # Runs Packer to build VyOS image
+    │       ├── build-vyos-image.sh       # Runs vyos-build to create VyOS image
     │       ├── generate-talos-config.sh  # Runs talhelper
     │       ├── create-seed-vm.sh         # Creates Talos VM on NAS
     │       └── install-argocd.sh         # Helm install Argo CD
@@ -564,18 +563,16 @@ infrastructure/
 
 VyOS provides the lab's core networking: routing, firewall, DHCP, and VPN.
 
-**Bootstrap Image (Packer):**
+**Bootstrap Image (vyos-build):**
 - VyOS is provisioned via Tinkerbell during genesis bootstrap
-- Packer builds a raw disk image with the initial configuration baked in
-- Image includes: VLANs, DHCP relay, BGP peering config, and firewall rules
+- The `vyos-build` toolchain builds a raw disk image with configuration baked in
+- Image includes: VLANs, DHCP relay, BGP peering config, firewall rules, and SSH credentials
 - Built once during initial bootstrap; stored on NAS for Tinkerbell to serve
-- Future configuration changes use the Ansible CI/CD pipeline (not Packer rebuild)
+- Future configuration changes use the Ansible CI/CD pipeline (not image rebuild)
 
-**Packer Build (`infrastructure/network/vyos/packer/`):**
-- `vyos.pkr.hcl` - Packer template defining image build
-- `variables.pkr.hcl` - Variables (VyOS version, output format, etc.)
-- `http/preseed.cfg` - VyOS preseed for automated installation
-- `scripts/provision.sh` - Applies initial config from `configs/gateway.conf`
+**VyOS Build (`infrastructure/network/vyos/vyos-build/`):**
+- `build-flavors/gateway.toml` - Build flavor defining config.boot content
+- `scripts/generate-flavor.sh` - Injects SSH credentials from SOPS secrets
 
 **Ongoing Management:**
 - Configuration stored as declarative VyOS config file
@@ -584,6 +581,7 @@ VyOS provides the lab's core networking: routing, firewall, DHCP, and VPN.
 - GitHub Action deploys config on merge to main
 
 **Workflow Files:**
+- `.github/workflows/vyos-build.yml` - Builds VyOS image via vyos-build
 - `.github/workflows/vyos-validate.yml` - Validates VyOS config on PR
 - `.github/workflows/vyos-deploy.yml` - Deploys VyOS config on merge
 
@@ -705,7 +703,7 @@ Step-by-step runbooks and scripts for bootstrapping the lab from scratch.
 
 **Runbooks (in order):**
 
-1. `01-build-vyos-image.md` - Build VyOS image with Packer (bakes in initial config)
+1. `01-build-vyos-image.md` - Build VyOS image with vyos-build (bakes in initial config)
 2. `02-seed-cluster.md` - Create Talos VM on NAS
 3. `03-deploy-argocd.md` - Install Argo CD manually via Helm
 4. `04-apply-bootstrap.md` - Apply bootstrap Application pointing to `bootstrap/seed/`
@@ -718,7 +716,7 @@ Step-by-step runbooks and scripts for bootstrapping the lab from scratch.
 
 **Scripts:**
 
-- `build-vyos-image.sh` - Runs Packer to build VyOS raw disk image
+- `build-vyos-image.sh` - Runs vyos-build to create VyOS raw disk image
 - `generate-talos-config.sh` - Runs talhelper to generate machine configs
 - `create-seed-vm.sh` - Creates Talos VM on NAS
 - `install-argocd.sh` - Installs Argo CD via Helm

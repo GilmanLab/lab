@@ -526,7 +526,7 @@ func TestImageMetadata_JSON(t *testing.T) {
 			UploadedAt: time.Date(2024, 12, 20, 12, 0, 0, 0, time.UTC),
 			Source: SourceMetadata{
 				Type: "local",
-				Path: "infrastructure/network/vyos/packer/output/vyos-lab.raw",
+				Path: "/tmp/vyos-gateway.raw",
 			},
 		}
 

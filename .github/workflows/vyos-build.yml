@@ -1,0 +1,164 @@
+name: Build VyOS Image
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'infrastructure/network/vyos/vyos-build/**'
+      - 'infrastructure/network/vyos/configs/gateway.conf'
+  pull_request:
+    paths:
+      - 'infrastructure/network/vyos/vyos-build/**'
+      - 'infrastructure/network/vyos/configs/gateway.conf'
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: 'Upload image to e2 storage'
+        type: boolean
+        default: true
+
+concurrency:
+  group: vyos-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate flavor template
+        run: |
+          # Check that the template file exists and contains required placeholders
+          TEMPLATE="infrastructure/network/vyos/vyos-build/build-flavors/gateway.toml"
+
+          if [[ ! -f "${TEMPLATE}" ]]; then
+            echo "ERROR: Template file not found: ${TEMPLATE}"
+            exit 1
+          fi
+
+          if ! grep -q '%%SSH_KEY_TYPE%%' "${TEMPLATE}"; then
+            echo "ERROR: Template missing %%SSH_KEY_TYPE%% placeholder"
+            exit 1
+          fi
+
+          if ! grep -q '%%SSH_PUBLIC_KEY%%' "${TEMPLATE}"; then
+            echo "ERROR: Template missing %%SSH_PUBLIC_KEY%% placeholder"
+            exit 1
+          fi
+
+          echo "Template validation passed"
+
+      - name: Check scripts are executable
+        run: |
+          for script in infrastructure/network/vyos/vyos-build/scripts/*.sh; do
+            if [[ ! -x "${script}" ]]; then
+              echo "ERROR: Script not executable: ${script}"
+              exit 1
+            fi
+            echo "OK: ${script}"
+          done
+
+  build:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: warp-ubuntu-latest-x64-8x
+    needs: validate
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: tools/labctl/go.sum
+
+      - name: Build labctl
+        run: |
+          cd tools/labctl
+          go build -o ../../labctl .
+
+      - name: Install SOPS
+        run: |
+          curl -LO https://github.com/getsops/sops/releases/download/v3.9.2/sops-v3.9.2.linux.amd64
+          chmod +x sops-v3.9.2.linux.amd64
+          sudo mv sops-v3.9.2.linux.amd64 /usr/local/bin/sops
+
+      - name: Write SOPS age key
+        run: |
+          echo "${{ secrets.SOPS_AGE_KEY }}" > /tmp/age-key.txt
+          chmod 600 /tmp/age-key.txt
+
+      - name: Extract SSH public key
+        env:
+          SOPS_AGE_KEY_FILE: /tmp/age-key.txt
+        run: |
+          sops --decrypt \
+            --extract '["ssh_public_key"]' images/packer-ssh.sops.yaml > /tmp/ssh_key.pub
+          echo "SSH key extracted"
+
+      - name: Clone vyos-build
+        run: |
+          git clone -b current --single-branch --depth 1 \
+            https://github.com/vyos/vyos-build.git /tmp/vyos-build
+
+      - name: Generate build flavor
+        run: |
+          ./infrastructure/network/vyos/vyos-build/scripts/generate-flavor.sh \
+            "$(cat /tmp/ssh_key.pub)" \
+            /tmp/vyos-build/data/build-flavors/gateway.toml
+
+      - name: Build VyOS image
+        run: |
+          # Generate version string
+          VERSION="lab-$(date +%Y%m%d%H%M%S)"
+
+          docker run --rm --privileged \
+            -v /tmp/vyos-build:/vyos \
+            -v /dev:/dev \
+            -e VYOS_BUILD_BY="ci@lab.gilman.io" \
+            -w /vyos \
+            vyos/vyos-build:current \
+            bash -c "sudo ./build-vyos-image --architecture amd64 --build-by ci@lab.gilman.io --build-type release --version ${VERSION} gateway"
+
+          # Find and move the output image (suppress permission denied errors)
+          echo "Looking for .raw image in build output..."
+          ls -la /tmp/vyos-build/ || true
+
+          # The raw image is created in the vyos-build root directory
+          RAW_FILE=$(find /tmp/vyos-build -maxdepth 1 -name "*.raw" -type f 2>/dev/null | head -1)
+
+          if [[ -z "${RAW_FILE}" ]]; then
+            echo "No .raw file in root, checking build directory..."
+            RAW_FILE=$(find /tmp/vyos-build/build -name "*.raw" -type f 2>/dev/null | head -1)
+          fi
+
+          if [[ -z "${RAW_FILE}" || ! -f "${RAW_FILE}" ]]; then
+            echo "ERROR: Build failed - no raw image found"
+            echo "Contents of /tmp/vyos-build:"
+            ls -la /tmp/vyos-build/ || true
+            echo "Contents of /tmp/vyos-build/build:"
+            ls -la /tmp/vyos-build/build/ 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "Found raw image: ${RAW_FILE}"
+          cp "${RAW_FILE}" /tmp/vyos-gateway.raw
+          echo "Build complete: /tmp/vyos-gateway.raw"
+          ls -lah /tmp/vyos-gateway.raw
+
+      - name: Upload to e2
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.upload)
+        run: |
+          ./labctl images upload \
+            --credentials images/e2.sops.yaml \
+            --sops-age-key-file /tmp/age-key.txt \
+            --source /tmp/vyos-gateway.raw \
+            --destination vyos/vyos-gateway.raw
+
+      - name: Upload build artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vyos-gateway-image
+          path: /tmp/vyos-gateway.raw
+          retention-days: 7
+          if-no-files-found: warn

@@ -1,22 +1,34 @@
-/* VyOS Gateway Configuration
- * Target: VP6630 (Minisforum) - Lab Gateway Router
- *
- * This is the source of truth for VyOS configuration.
- * Applied via Ansible on merge to main branch.
- *
- * Interface Mapping (update after hardware inspection):
- *   WAN_IFACE  = eth4  (Top SFP+ -> CCR2004)
- *   TRUNK_IFACE = eth5  (Bottom SFP+ -> CRS Switch)
- *
- * VLAN Architecture:
- *   10 - LAB_MGMT     (10.10.10.0/24) - Infrastructure management
- *   20 - LAB_PROV     (10.10.20.0/24) - Provisioning (PXE)
- *   30 - LAB_PLATFORM (10.10.30.0/24) - Platform cluster
- *   40 - LAB_CLUSTER  (10.10.40.0/24) - Tenant clusters
- *   50 - LAB_SERVICE  (10.10.50.0/24) - Service VIPs (BGP)
- *   60 - LAB_STORAGE  (10.10.60.0/24) - Storage replication
- */
+# VyOS Gateway Build Flavor
+# Produces a raw disk image with lab configuration baked in
+# Target: VP6630 (Minisforum) - Lab Gateway Router
+#
+# Usage:
+#   This is a template file - use generate-flavor.sh to create the final TOML
+#   with SSH credentials injected from SOPS secrets.
 
+# Output format: raw disk image for Tinkerbell/NAS deployment
+image_format = "raw"
+
+# Image settings
+disk_size = 8  # GB
+
+# Include QEMU guest agent for VM environments
+packages = ["qemu-guest-agent"]
+
+# Boot settings - serial console for headless operation
+[boot_settings]
+console_type = "serial"
+serial_console = "ttyS0,115200n8"
+
+# Default configuration - will be merged with SSH key at build time
+# This serves as the base config.boot content
+#
+# IMPORTANT: The SSH key placeholder %%SSH_KEY_TYPE%% and %%SSH_PUBLIC_KEY%%
+# will be replaced by the build script with actual values from SOPS secrets.
+#
+# The configuration below is based on infrastructure/network/vyos/configs/gateway.conf
+# converted to VyOS config.boot format (nested curly braces)
+default_config = '''
 firewall {
     group {
         network-group HOME_NETWORK {
@@ -224,12 +236,6 @@ protocols {
                 }
             }
         }
-        /* BGP neighbors are shutdown by default
-         * Enable when Cilium is deployed on platform nodes:
-         *   delete protocols bgp neighbor 10.10.30.10 shutdown
-         *   delete protocols bgp neighbor 10.10.30.11 shutdown
-         *   delete protocols bgp neighbor 10.10.30.12 shutdown
-         */
         neighbor 10.10.30.10 {
             address-family {
                 ipv4-unicast {
@@ -318,11 +324,16 @@ service {
 system {
     domain-name lab.gilman.io
     host-name gateway
-    /* SSH keys managed separately via Ansible or vyos-build
-     * Do not commit real keys to this file
-     * vyos-build: baked into image via build-flavors/gateway.toml
-     * Ansible: deploy.yml -e ssh_public_key_file=~/.ssh/id_rsa.pub
-     */
+    login {
+        user vyos {
+            authentication {
+                public-keys admin {
+                    key "%%SSH_PUBLIC_KEY%%"
+                    type %%SSH_KEY_TYPE%%
+                }
+            }
+        }
+    }
     name-server 1.1.1.1
     name-server 8.8.8.8
     ntp {
@@ -331,3 +342,4 @@ system {
     }
     time-zone America/Los_Angeles
 }
+'''

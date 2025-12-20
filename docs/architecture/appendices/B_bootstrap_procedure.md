@@ -114,28 +114,28 @@ Phase 4: Full Platform (3-Node HA)
 **Purpose:** Create a bootable VyOS disk image with the initial lab configuration baked in.
 
 **Mechanism:**
-- Run Packer against `infrastructure/network/vyos/packer/vyos.pkr.hcl`
-- Packer downloads VyOS ISO, installs to virtual disk, applies initial config
-- Configuration sourced from `infrastructure/network/vyos/configs/gateway.conf`
-- Output: Raw disk image stored on NAS for Tinkerbell to serve
+- Use the official `vyos-build` toolchain via Docker (`vyos/vyos-build:current`)
+- Build flavor in `infrastructure/network/vyos/vyos-build/build-flavors/gateway.toml` defines the configuration
+- Configuration sourced from `infrastructure/network/vyos/configs/gateway.conf` (embedded in flavor)
+- SSH credentials injected from SOPS secrets at build time
+- Output: Raw disk image uploaded to iDrive e2, synced to NAS via Cloud Sync
 
 **Why Now:**
 - VyOS image must exist before Tinkerbell can serve it
 - Baking config into image avoids manual configuration during bootstrap
-- Packer runs on admin workstation (not in cluster)
+- Build runs in CI (GitHub Actions) or locally via Docker
 
 **Image Contents:**
-- VyOS LTS release
+- VyOS rolling release
 - Pre-configured VLANs (10, 20, 30, 40, 50, 60)
 - DHCP relay for VLANs 30 and 40 (points to Tinkerbell)
 - BGP peering configuration for service VIPs
 - Firewall rules for lab isolation
 - SSH keys for initial access
 
-**Output:**
+**Build Workflow:**
 ```
-infrastructure/network/vyos/packer/output/
-└── vyos-lab.raw              # Raw disk image (~2GB)
+.github/workflows/vyos-build.yml → vyos/vyos-build container → iDrive e2 → NAS Cloud Sync
 ```
 
 ### Step 2: Generate Talos Configs
@@ -746,7 +746,7 @@ spec:
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                         PHASE 1: SEED (NAS)                             │
 │                                                                         │
-│  Step 1: Build VyOS Image (Packer)                                     │
+│  Step 1: Build VyOS Image (vyos-build)                                 │
 │           ↓                                                             │
 │  Step 2: Generate Talos Configs (talhelper)                            │
 │           ↓                                                             │
@@ -825,7 +825,7 @@ spec:
 
 | Phase | Step | Name | Duration | Purpose |
 |:------|:-----|:-----|:---------|:--------|
-| 1 | 1 | Build VyOS Image | 10 min | Create VyOS disk image with Packer |
+| 1 | 1 | Build VyOS Image | 10 min | Create VyOS disk image with vyos-build |
 | 1 | 2 | Generate Talos Configs | 2 min | Create machine configs for all platform nodes |
 | 1 | 3 | Create Seed Talos VM | 15 min | Bootstrap initial Kubernetes cluster on NAS |
 | 1 | 4 | Deploy Argo CD | 5 min | Install GitOps controller |
@@ -875,7 +875,7 @@ Before beginning the bootstrap, ensure the following are in place:
 | 40 | 10.10.40.0/24 | Tenant clusters | DHCP (Tinkerbell) |
 | 60 | 10.10.60.0/24 | Storage replication | Static IPs |
 
-**Note:** VyOS is provisioned via Tinkerbell during bootstrap (Step 7). The Packer-built image includes:
+**Note:** VyOS is provisioned via Tinkerbell during bootstrap (Step 7). The vyos-build image includes:
 - VLANs configured and routing enabled
 - DHCP relay enabled for VLANs 30 and 40 (points to Tinkerbell)
 - DNS forwarding configured
@@ -885,7 +885,7 @@ Before beginning the bootstrap, ensure the following are in place:
 
 | Tool | Version | Purpose |
 |:-----|:--------|:--------|
-| Packer | v1.11.0+ | Build VyOS disk image |
+| Docker | v24.0.0+ | Run vyos-build container for VyOS image |
 | talhelper | v3.0.0+ | Generate Talos machine configs |
 | SOPS | v3.9.0+ | Encrypt Talos secrets |
 | kubectl | v1.31.0+ | Kubernetes CLI |

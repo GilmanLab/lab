@@ -21,7 +21,7 @@ var uploadCmd = &cobra.Command{
 	Short: "Upload a local file to e2",
 	Long: `Upload a local file to e2 storage.
 
-The upload command is used by Packer workflows to upload built images.
+The upload command is used by build workflows to upload built images.
 It computes the SHA256 checksum and writes metadata JSON in the same
 format as the sync command.`,
 	RunE: runUpload,
