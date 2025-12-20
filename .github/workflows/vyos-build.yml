@@ -301,7 +301,8 @@ jobs:
           else
             mkdir -p "${HOME}/.cache/containerlab"
             bash -c "$(curl -sL https://get.containerlab.dev)"
-            sudo cp /usr/local/bin/containerlab "${HOME}/.cache/containerlab/containerlab"
+            BIN_PATH="$(command -v containerlab)"
+            sudo cp "${BIN_PATH}" "${HOME}/.cache/containerlab/containerlab"
           fi
           containerlab version
 
