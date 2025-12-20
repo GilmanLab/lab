@@ -2,7 +2,9 @@ name: Build VyOS Image
 
 on:
   push:
-    branches: [master]
+    branches:
+      - master
+      - joshuagilman/hom-24-introduce-containerlab-integration-tests-for-vyos-gateway
     paths:
       - 'infrastructure/network/vyos/**'
   pull_request:
