@@ -1,0 +1,17 @@
+# Default recipe
+default: all
+
+# Run formatting checks and auto-fix
+fmt:
+    go fmt ./...
+
+# Run linters
+lint:
+    golangci-lint run ./...
+
+# Run tests
+test:
+    go test -v ./...
+
+# Run formatting, linting, and testing
+all: fmt lint test
