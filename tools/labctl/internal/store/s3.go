@@ -1,0 +1,274 @@
+// Package store provides storage operations for the image pipeline.
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"path"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+
+	labcreds "github.com/GilmanLab/lab/tools/labctl/internal/credentials"
+)
+
+// ImageMetadata represents metadata stored alongside each image.
+type ImageMetadata struct {
+	Name       string         `json:"name"`
+	Checksum   string         `json:"checksum"`
+	Size       int64          `json:"size"`
+	UploadedAt time.Time      `json:"uploadedAt"`
+	Source     SourceMetadata `json:"source"`
+}
+
+// SourceMetadata describes the origin of an image.
+type SourceMetadata struct {
+	// Type is "http" for downloaded images or "local" for uploaded files.
+	Type string `json:"type,omitempty"`
+	// URL is set for HTTP sources.
+	URL string `json:"url,omitempty"`
+	// Path is set for local file uploads.
+	Path string `json:"path,omitempty"`
+}
+
+// S3Client wraps the AWS S3 client for image storage operations.
+type S3Client struct {
+	client *s3.Client
+	bucket string
+}
+
+// S3Option configures the S3 client.
+type S3Option func(*s3ClientConfig)
+
+type s3ClientConfig struct {
+	ctx context.Context
+}
+
+// WithContext sets the context for S3 client initialization.
+func WithContext(ctx context.Context) S3Option {
+	return func(c *s3ClientConfig) {
+		c.ctx = ctx
+	}
+}
+
+// NewS3Client creates a new S3 client from e2 credentials.
+func NewS3Client(creds *labcreds.E2Credentials, opts ...S3Option) (*S3Client, error) {
+	cfg := &s3ClientConfig{
+		ctx: context.Background(),
+	}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	// Load AWS config with custom credentials
+	awsCfg, err := config.LoadDefaultConfig(cfg.ctx,
+		config.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(creds.AccessKey, creds.SecretKey, ""),
+		),
+		config.WithRegion("us-east-1"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("load AWS config: %w", err)
+	}
+
+	// Create S3 client with custom endpoint for e2
+	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(creds.Endpoint)
+		o.UsePathStyle = true // Required for S3-compatible services
+	})
+
+	return &S3Client{
+		client: client,
+		bucket: creds.Bucket,
+	}, nil
+}
+
+// Upload uploads a file to the S3 bucket.
+func (c *S3Client) Upload(ctx context.Context, key string, body io.Reader, size int64) error {
+	_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(c.bucket),
+		Key:           aws.String(key),
+		Body:          body,
+		ContentLength: aws.Int64(size),
+	})
+	if err != nil {
+		return fmt.Errorf("upload to s3://%s/%s: %w", c.bucket, key, err)
+	}
+	return nil
+}
+
+// Download downloads a file from the S3 bucket.
+func (c *S3Client) Download(ctx context.Context, key string) (io.ReadCloser, error) {
+	output, err := c.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("download from s3://%s/%s: %w", c.bucket, key, err)
+	}
+	return output.Body, nil
+}
+
+// Exists checks if an object exists in the S3 bucket.
+func (c *S3Client) Exists(ctx context.Context, key string) (bool, error) {
+	_, err := c.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		// Check if it's a "not found" error
+		// The AWS SDK v2 doesn't have a typed NotFound error, so we check the error message
+		if isNotFoundError(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("check existence of s3://%s/%s: %w", c.bucket, key, err)
+	}
+	return true, nil
+}
+
+// isNotFoundError checks if the error is an S3 not found error.
+func isNotFoundError(err error) bool {
+	// AWS SDK v2 returns errors that can be checked via their error code
+	// For S3 HeadObject, a missing object returns a 404 status
+	return err != nil && (
+	// Check for common not found patterns
+	contains(err.Error(), "NotFound") ||
+		contains(err.Error(), "404") ||
+		contains(err.Error(), "NoSuchKey"))
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsImpl(s, substr))
+}
+
+func containsImpl(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+// List lists all objects in the bucket with the given prefix.
+func (c *S3Client) List(ctx context.Context, prefix string) ([]string, error) {
+	var keys []string
+
+	paginator := s3.NewListObjectsV2Paginator(c.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(c.bucket),
+		Prefix: aws.String(prefix),
+	})
+
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list objects in s3://%s/%s: %w", c.bucket, prefix, err)
+		}
+		for _, obj := range page.Contents {
+			keys = append(keys, aws.ToString(obj.Key))
+		}
+	}
+
+	return keys, nil
+}
+
+// Delete deletes an object from the S3 bucket.
+func (c *S3Client) Delete(ctx context.Context, key string) error {
+	_, err := c.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return fmt.Errorf("delete s3://%s/%s: %w", c.bucket, key, err)
+	}
+	return nil
+}
+
+// MetadataKey returns the metadata key for a given image path.
+// Example: "vyos/vyos-1.5.iso" -> "metadata/vyos/vyos-1.5.iso.json"
+func MetadataKey(imagePath string) string {
+	return path.Join("metadata", imagePath+".json")
+}
+
+// ImageKey returns the image key for a given destination path.
+// Example: "vyos/vyos-1.5.iso" -> "images/vyos/vyos-1.5.iso"
+func ImageKey(destination string) string {
+	return path.Join("images", destination)
+}
+
+// GetMetadata retrieves metadata for an image.
+func (c *S3Client) GetMetadata(ctx context.Context, imagePath string) (*ImageMetadata, error) {
+	key := MetadataKey(imagePath)
+
+	body, err := c.Download(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = body.Close() }()
+
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return nil, fmt.Errorf("read metadata: %w", err)
+	}
+
+	var metadata ImageMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return nil, fmt.Errorf("parse metadata: %w", err)
+	}
+
+	return &metadata, nil
+}
+
+// PutMetadata stores metadata for an image.
+func (c *S3Client) PutMetadata(ctx context.Context, imagePath string, metadata *ImageMetadata) error {
+	key := MetadataKey(imagePath)
+
+	data, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal metadata: %w", err)
+	}
+
+	return c.Upload(ctx, key, newBytesReader(data), int64(len(data)))
+}
+
+// bytesReader wraps a byte slice to implement io.Reader.
+type bytesReader struct {
+	data []byte
+	pos  int
+}
+
+func newBytesReader(data []byte) *bytesReader {
+	return &bytesReader{data: data}
+}
+
+func (r *bytesReader) Read(p []byte) (n int, err error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n = copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+// ChecksumMatches checks if the stored metadata checksum matches the expected checksum.
+func (c *S3Client) ChecksumMatches(ctx context.Context, imagePath, expectedChecksum string) (bool, error) {
+	exists, err := c.Exists(ctx, MetadataKey(imagePath))
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, nil
+	}
+
+	metadata, err := c.GetMetadata(ctx, imagePath)
+	if err != nil {
+		return false, err
+	}
+
+	return metadata.Checksum == expectedChecksum, nil
+}
