@@ -60,7 +60,8 @@ jobs:
           done
 
   build:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # TODO: Remove pull_request after testing - temporary for functional validation
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
     runs-on: warp-ubuntu-latest-x64-8x
     needs: validate
     steps:
