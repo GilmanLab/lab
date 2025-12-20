@@ -1,0 +1,17 @@
+# TODO: Once vyos-build workflow is implemented, add check-success condition
+# to verify the VyOS build before auto-merging image update PRs.
+
+pull_request_rules:
+  - name: Auto-merge automated image updates
+    conditions:
+      - author=github-actions[bot]
+      - label=automated
+      - base=master
+      - "#approved-reviews-by>=0"
+    actions:
+      merge:
+        method: squash
+        commit_message_template: |
+          {{ title }}
+
+          {{ body }}

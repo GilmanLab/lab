@@ -1,0 +1,97 @@
+name: Sync Images
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'images/**'
+  pull_request:
+    paths:
+      - 'images/**'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force re-upload all images'
+        type: boolean
+        default: false
+      prune:
+        description: 'Run prune after sync'
+        type: boolean
+        default: false
+
+concurrency:
+  group: images-sync-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: tools/labctl/go.sum
+
+      - name: Build labctl
+        run: |
+          cd tools/labctl
+          go build -o ../../labctl .
+
+      - name: Install SOPS
+        if: github.event_name != 'pull_request'
+        run: |
+          curl -LO https://github.com/getsops/sops/releases/download/v3.9.2/sops-v3.9.2.linux.amd64
+          chmod +x sops-v3.9.2.linux.amd64
+          sudo mv sops-v3.9.2.linux.amd64 /usr/local/bin/sops
+
+      - name: Write SOPS age key
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "${{ secrets.SOPS_AGE_KEY }}" > /tmp/age-key.txt
+          chmod 600 /tmp/age-key.txt
+
+      # PR: validate manifest only (no credentials needed)
+      - name: Validate Manifest (PR)
+        if: github.event_name == 'pull_request'
+        run: ./labctl images validate
+
+      # Push/dispatch: full sync with credentials
+      - name: Sync Images
+        if: github.event_name != 'pull_request'
+        id: sync
+        run: |
+          FLAGS=""
+          if [ "${{ inputs.force }}" == "true" ]; then FLAGS="--force"; fi
+
+          ./labctl images sync \
+            --credentials images/e2.sops.yaml \
+            --sops-age-key-file /tmp/age-key.txt \
+            $FLAGS
+
+      - name: Create PR if files changed
+        if: github.event_name == 'push' && steps.sync.outputs.files_changed == 'true'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'chore: update source image references'
+          title: 'chore: update source image references'
+          body: |
+            Automated update of source image references.
+
+            Updated by `labctl images sync`.
+          branch: automated/image-updates
+          labels: automated
+          delete-branch: true
+
+      - name: Prune Orphaned Images
+        if: github.event_name != 'pull_request' && inputs.prune == true
+        run: |
+          ./labctl images prune \
+            --credentials images/e2.sops.yaml \
+            --sops-age-key-file /tmp/age-key.txt
