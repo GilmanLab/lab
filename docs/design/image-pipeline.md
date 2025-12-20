@@ -266,6 +266,7 @@ echo "files_changed=true" >> "$GITHUB_OUTPUT"
 
 **Metadata Schema:**
 ```json
+// For sync (HTTP sources)
 {
   "name": "talos-1.9.1",
   "checksum": "sha256:abc123...",
@@ -273,6 +274,18 @@ echo "files_changed=true" >> "$GITHUB_OUTPUT"
   "uploadedAt": "2024-12-20T10:00:00Z",
   "source": {
     "url": "https://factory.talos.dev/..."
+  }
+}
+
+// For upload (local files, e.g., Packer output)
+{
+  "name": "vyos-gateway",
+  "checksum": "sha256:def456...",
+  "size": 8589934592,
+  "uploadedAt": "2024-12-20T12:00:00Z",
+  "source": {
+    "type": "local",
+    "path": "infrastructure/network/vyos/packer/output/vyos-lab.raw"
   }
 }
 ```
@@ -429,11 +442,11 @@ jobs:
 
       - name: Packer Validate
         run: |
-          # Validate with dummy values (real values only needed for build)
+          # Validate with dummy values for required vars without defaults
+          # Note: vyos_iso_url/checksum come from source.auto.pkrvars.hcl (auto-loaded)
           packer validate \
             -var "ssh_key_type=ssh-ed25519" \
             -var "ssh_public_key=AAAA" \
-            -var "vyos_iso_checksum=sha256:0000000000000000000000000000000000000000000000000000000000000000" \
             infrastructure/network/vyos/packer
 
   # Build only on merge to main
@@ -477,6 +490,7 @@ jobs:
       - name: Packer Build
         run: |
           # Extract key type and body from public key
+          # Note: vyos_iso_url/checksum auto-loaded from source.auto.pkrvars.hcl
           SSH_KEY_TYPE=$(awk '{print $1}' /tmp/ssh_key.pub)
           SSH_KEY_BODY=$(awk '{print $2}' /tmp/ssh_key.pub)
           packer build \
@@ -492,6 +506,10 @@ jobs:
             --source infrastructure/network/vyos/packer/output/vyos-lab.raw \
             --destination vyos/vyos-gateway.raw
 ```
+
+**Packer Variable Loading:** Packer automatically loads `*.auto.pkrvars.hcl` files from the
+template directory. The `source.auto.pkrvars.hcl` file (updated by `labctl images sync`) provides
+`vyos_iso_url` and `vyos_iso_checksum` without explicit `-var-file` flags.
 
 ### 8.3 Mergify Configuration (.mergify.yml)
 
