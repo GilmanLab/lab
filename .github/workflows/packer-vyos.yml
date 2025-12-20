@@ -49,7 +49,9 @@ jobs:
           cache-dependency-path: tools/labctl/go.sum
 
       - name: Build labctl
-        run: go build -o labctl ./tools/labctl
+        run: |
+          cd tools/labctl
+          go build -o ../../labctl .
 
       - name: Install SOPS
         run: |

@@ -8,7 +8,6 @@ on:
   pull_request:
     paths:
       - 'images/**'
-      - '.github/workflows/images-sync.yml'  # TESTING: trigger on workflow changes
   workflow_dispatch:
     inputs:
       force:
@@ -45,18 +44,26 @@ jobs:
           go build -o ../../labctl .
 
       - name: Install SOPS
+        if: github.event_name != 'pull_request'
         run: |
           curl -LO https://github.com/getsops/sops/releases/download/v3.9.2/sops-v3.9.2.linux.amd64
           chmod +x sops-v3.9.2.linux.amd64
           sudo mv sops-v3.9.2.linux.amd64 /usr/local/bin/sops
 
-      # TESTING: Running full sync on PRs for verification
       - name: Write SOPS age key
+        if: github.event_name != 'pull_request'
         run: |
           echo "${{ secrets.SOPS_AGE_KEY }}" > /tmp/age-key.txt
           chmod 600 /tmp/age-key.txt
 
+      # PR: validate manifest only (no credentials needed)
+      - name: Validate Manifest (PR)
+        if: github.event_name == 'pull_request'
+        run: ./labctl images validate
+
+      # Push/dispatch: full sync with credentials
       - name: Sync Images
+        if: github.event_name != 'pull_request'
         id: sync
         run: |
           FLAGS=""
