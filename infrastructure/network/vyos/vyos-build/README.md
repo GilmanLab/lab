@@ -18,8 +18,7 @@ vyos-build/
 ├── build-flavors/
 │   └── gateway.toml      # Build flavor template with config.boot
 ├── scripts/
-│   ├── generate-flavor.sh # Injects SSH credentials into flavor
-│   └── build.sh          # Runs inside vyos-build container
+│   └── generate-flavor.sh # Injects SSH credentials into flavor
 └── README.md
 ```
 
