@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/GilmanLab/lab/tools/labctl/internal/config"
+	"github.com/GilmanLab/lab/tools/labctl/internal/store"
 )
 
 func TestVerifyChecksum(t *testing.T) {
@@ -122,16 +125,86 @@ func TestDecompress(t *testing.T) {
 }
 
 func TestDownloadToTemp(t *testing.T) {
-	// This function requires a real HTTP server, so we skip detailed testing.
-	// The sync command integration relies on this working with real URLs.
-	// We just test that invalid URLs return errors.
-
 	t.Run("invalid URL returns error", func(t *testing.T) {
 		file, size, err := downloadToTemp(context.Background(), "http://invalid.localhost.test:99999/file")
 
 		assert.Nil(t, file)
 		assert.Zero(t, size)
 		assert.Error(t, err)
+	})
+}
+
+func TestDownloadToTempWithClient(t *testing.T) {
+	t.Run("successful download", func(t *testing.T) {
+		content := "test file content"
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(content))
+		}))
+		defer server.Close()
+
+		file, size, err := downloadToTempWithClient(context.Background(), server.Client(), server.URL)
+
+		require.NoError(t, err)
+		defer func() {
+			_ = file.Close()
+			_ = os.Remove(file.Name())
+		}()
+
+		assert.Equal(t, int64(len(content)), size)
+
+		// Verify content
+		_, err = file.Seek(0, 0)
+		require.NoError(t, err)
+		downloaded, err := io.ReadAll(file)
+		require.NoError(t, err)
+		assert.Equal(t, content, string(downloaded))
+	})
+
+	t.Run("HTTP 404 returns error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		file, size, err := downloadToTempWithClient(context.Background(), server.Client(), server.URL)
+
+		assert.Nil(t, file)
+		assert.Zero(t, size)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "HTTP 404")
+	})
+
+	t.Run("HTTP 500 returns error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer server.Close()
+
+		file, size, err := downloadToTempWithClient(context.Background(), server.Client(), server.URL)
+
+		assert.Nil(t, file)
+		assert.Zero(t, size)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "HTTP 500")
+	})
+
+	t.Run("sets correct user agent", func(t *testing.T) {
+		var receivedUA string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			receivedUA = r.Header.Get("User-Agent")
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		file, _, err := downloadToTempWithClient(context.Background(), server.Client(), server.URL)
+		if file != nil {
+			_ = file.Close()
+			_ = os.Remove(file.Name())
+		}
+
+		require.NoError(t, err)
+		assert.Equal(t, "labctl/1.0", receivedUA)
 	})
 }
 
@@ -226,6 +299,311 @@ func TestSyncImage(t *testing.T) {
 
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "check existing image")
+	})
+}
+
+func TestSyncImageWithHTTP(t *testing.T) {
+	// Helper to compute SHA256 checksum
+	computeChecksum := func(data []byte) string {
+		h := sha256.Sum256(data)
+		return "sha256:" + hex.EncodeToString(h[:])
+	}
+
+	t.Run("full sync path: download, verify, upload, metadata", func(t *testing.T) {
+		// Create test content and compute checksum
+		content := []byte("test image content for full sync path")
+		checksum := computeChecksum(content)
+
+		// Mock HTTP server
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(content)
+		}))
+		defer server.Close()
+
+		// Track S3 operations
+		var uploadedData []byte
+		var uploadedKey string
+		var savedMetadata *store.ImageMetadata
+
+		client := &mockStoreClient{
+			checksumMatchFunc: func(_ context.Context, _ string, _ string) (bool, error) {
+				return false, nil // Checksum doesn't match, proceed with sync
+			},
+			uploadFunc: func(_ context.Context, key string, body io.Reader, _ int64) error {
+				uploadedKey = key
+				var err error
+				uploadedData, err = io.ReadAll(body)
+				return err
+			},
+			putMetadataFunc: func(_ context.Context, _ string, metadata *store.ImageMetadata) error {
+				savedMetadata = metadata
+				return nil
+			},
+		}
+
+		img := config.Image{
+			Name:        "test-image",
+			Destination: "test/test.iso",
+			Source: config.Source{
+				URL:      server.URL,
+				Checksum: checksum,
+			},
+		}
+
+		changed, err := syncImageWithHTTP(context.Background(), client, server.Client(), img, false, false)
+
+		require.NoError(t, err)
+		assert.False(t, changed) // No updateFile, so no file changes
+
+		// Verify upload occurred with correct data
+		assert.Equal(t, "images/test/test.iso", uploadedKey)
+		assert.Equal(t, content, uploadedData)
+
+		// Verify metadata was saved
+		require.NotNil(t, savedMetadata)
+		assert.Equal(t, "test-image", savedMetadata.Name)
+		assert.Equal(t, checksum, savedMetadata.Checksum)
+		assert.Equal(t, int64(len(content)), savedMetadata.Size)
+		assert.Equal(t, "http", savedMetadata.Source.Type)
+		assert.Equal(t, server.URL, savedMetadata.Source.URL)
+	})
+
+	t.Run("full sync path with gzip decompression", func(t *testing.T) {
+		// Create compressed content
+		decompressedContent := []byte("decompressed image content")
+		var compressedBuf bytes.Buffer
+		gzWriter := gzip.NewWriter(&compressedBuf)
+		_, err := gzWriter.Write(decompressedContent)
+		require.NoError(t, err)
+		require.NoError(t, gzWriter.Close())
+		compressedContent := compressedBuf.Bytes()
+
+		sourceChecksum := computeChecksum(compressedContent)
+		decompressedChecksum := computeChecksum(decompressedContent)
+
+		// Mock HTTP server
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(compressedContent)
+		}))
+		defer server.Close()
+
+		// Track S3 operations
+		var uploadedData []byte
+		var savedMetadata *store.ImageMetadata
+
+		client := &mockStoreClient{
+			checksumMatchFunc: func(_ context.Context, _ string, _ string) (bool, error) {
+				return false, nil
+			},
+			uploadFunc: func(_ context.Context, _ string, body io.Reader, _ int64) error {
+				var err error
+				uploadedData, err = io.ReadAll(body)
+				return err
+			},
+			putMetadataFunc: func(_ context.Context, _ string, metadata *store.ImageMetadata) error {
+				savedMetadata = metadata
+				return nil
+			},
+		}
+
+		img := config.Image{
+			Name:        "compressed-image",
+			Destination: "test/compressed.iso",
+			Source: config.Source{
+				URL:        server.URL,
+				Checksum:   sourceChecksum,
+				Decompress: "gzip",
+			},
+			Validation: &config.Validation{
+				Expected: decompressedChecksum,
+			},
+		}
+
+		changed, err := syncImageWithHTTP(context.Background(), client, server.Client(), img, false, false)
+
+		require.NoError(t, err)
+		assert.False(t, changed)
+
+		// Verify decompressed content was uploaded
+		assert.Equal(t, decompressedContent, uploadedData)
+
+		// Verify metadata uses the decompressed checksum (validation.expected)
+		require.NotNil(t, savedMetadata)
+		assert.Equal(t, decompressedChecksum, savedMetadata.Checksum)
+		assert.Equal(t, int64(len(decompressedContent)), savedMetadata.Size)
+	})
+
+	t.Run("download error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		client := &mockStoreClient{
+			checksumMatchFunc: func(_ context.Context, _ string, _ string) (bool, error) {
+				return false, nil
+			},
+		}
+
+		img := config.Image{
+			Name:        "missing-image",
+			Destination: "test/missing.iso",
+			Source: config.Source{
+				URL:      server.URL,
+				Checksum: "sha256:abc123",
+			},
+		}
+
+		_, err := syncImageWithHTTP(context.Background(), client, server.Client(), img, false, false)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "download")
+	})
+
+	t.Run("checksum verification failure", func(t *testing.T) {
+		content := []byte("actual content")
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(content)
+		}))
+		defer server.Close()
+
+		client := &mockStoreClient{
+			checksumMatchFunc: func(_ context.Context, _ string, _ string) (bool, error) {
+				return false, nil
+			},
+		}
+
+		img := config.Image{
+			Name:        "bad-checksum-image",
+			Destination: "test/bad.iso",
+			Source: config.Source{
+				URL:      server.URL,
+				Checksum: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+			},
+		}
+
+		_, err := syncImageWithHTTP(context.Background(), client, server.Client(), img, false, false)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "source checksum verification")
+	})
+
+	t.Run("upload error", func(t *testing.T) {
+		content := []byte("test content")
+		checksum := computeChecksum(content)
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(content)
+		}))
+		defer server.Close()
+
+		client := &mockStoreClient{
+			checksumMatchFunc: func(_ context.Context, _ string, _ string) (bool, error) {
+				return false, nil
+			},
+			uploadFunc: func(_ context.Context, _ string, _ io.Reader, _ int64) error {
+				return errors.New("S3 upload failed")
+			},
+		}
+
+		img := config.Image{
+			Name:        "upload-fail-image",
+			Destination: "test/fail.iso",
+			Source: config.Source{
+				URL:      server.URL,
+				Checksum: checksum,
+			},
+		}
+
+		_, err := syncImageWithHTTP(context.Background(), client, server.Client(), img, false, false)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "upload")
+	})
+
+	t.Run("metadata write error", func(t *testing.T) {
+		content := []byte("test content")
+		checksum := computeChecksum(content)
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(content)
+		}))
+		defer server.Close()
+
+		client := &mockStoreClient{
+			checksumMatchFunc: func(_ context.Context, _ string, _ string) (bool, error) {
+				return false, nil
+			},
+			uploadFunc: func(_ context.Context, _ string, _ io.Reader, _ int64) error {
+				return nil
+			},
+			putMetadataFunc: func(_ context.Context, _ string, _ *store.ImageMetadata) error {
+				return errors.New("metadata write failed")
+			},
+		}
+
+		img := config.Image{
+			Name:        "metadata-fail-image",
+			Destination: "test/metadata-fail.iso",
+			Source: config.Source{
+				URL:      server.URL,
+				Checksum: checksum,
+			},
+		}
+
+		_, err := syncImageWithHTTP(context.Background(), client, server.Client(), img, false, false)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "write metadata")
+	})
+
+	t.Run("decompressed checksum verification failure", func(t *testing.T) {
+		// Create compressed content
+		decompressedContent := []byte("decompressed content")
+		var compressedBuf bytes.Buffer
+		gzWriter := gzip.NewWriter(&compressedBuf)
+		_, err := gzWriter.Write(decompressedContent)
+		require.NoError(t, err)
+		require.NoError(t, gzWriter.Close())
+		compressedContent := compressedBuf.Bytes()
+
+		sourceChecksum := computeChecksum(compressedContent)
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(compressedContent)
+		}))
+		defer server.Close()
+
+		client := &mockStoreClient{
+			checksumMatchFunc: func(_ context.Context, _ string, _ string) (bool, error) {
+				return false, nil
+			},
+		}
+
+		img := config.Image{
+			Name:        "bad-decompress-checksum",
+			Destination: "test/bad-decompress.iso",
+			Source: config.Source{
+				URL:        server.URL,
+				Checksum:   sourceChecksum,
+				Decompress: "gzip",
+			},
+			Validation: &config.Validation{
+				Expected: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+			},
+		}
+
+		_, err = syncImageWithHTTP(context.Background(), client, server.Client(), img, false, false)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "decompressed checksum verification")
 	})
 }
 

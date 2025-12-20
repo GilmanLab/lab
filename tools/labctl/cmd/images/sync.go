@@ -24,6 +24,12 @@ import (
 	"github.com/GilmanLab/lab/tools/labctl/internal/updater"
 )
 
+// HTTPClient defines the interface for HTTP operations.
+// This enables dependency injection for testing.
+type HTTPClient interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
 var syncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Sync images to e2 storage",
@@ -87,7 +93,7 @@ func runSync(_ *cobra.Command, _ []string) error {
 
 	// Process each image
 	for _, img := range manifest.Spec.Images {
-		changed, err := syncImage(ctx, client, img, syncDryRun, syncForce)
+		changed, err := syncImageWithHTTP(ctx, client, http.DefaultClient, img, syncDryRun, syncForce)
 		if err != nil {
 			return fmt.Errorf("sync image %q: %w", img.Name, err)
 		}
@@ -110,7 +116,15 @@ func runSync(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
+// syncImage syncs an image using the default HTTP client.
+// This is a convenience wrapper for syncImageWithHTTP.
 func syncImage(ctx context.Context, client store.Client, img config.Image, dryRun, force bool) (bool, error) {
+	return syncImageWithHTTP(ctx, client, http.DefaultClient, img, dryRun, force)
+}
+
+// syncImageWithHTTP syncs an image using the provided HTTP and store clients.
+// This function enables dependency injection for testing.
+func syncImageWithHTTP(ctx context.Context, client store.Client, httpClient HTTPClient, img config.Image, dryRun, force bool) (bool, error) {
 	fmt.Printf("Processing: %s\n", img.Name)
 
 	effectiveChecksum := img.EffectiveChecksum()
@@ -138,7 +152,7 @@ func syncImage(ctx context.Context, client store.Client, img config.Image, dryRu
 
 	// Download source image to temp file
 	fmt.Printf("  Downloading from: %s\n", img.Source.URL)
-	tempFile, size, err := downloadToTemp(ctx, img.Source.URL)
+	tempFile, size, err := downloadToTempWithClient(ctx, httpClient, img.Source.URL)
 	if err != nil {
 		return false, fmt.Errorf("download: %w", err)
 	}
@@ -258,14 +272,21 @@ func syncImage(ctx context.Context, client store.Client, img config.Image, dryRu
 	return filesChanged, nil
 }
 
+// downloadToTemp downloads a URL to a temp file using the default HTTP client.
 func downloadToTemp(ctx context.Context, url string) (*os.File, int64, error) {
+	return downloadToTempWithClient(ctx, http.DefaultClient, url)
+}
+
+// downloadToTempWithClient downloads a URL to a temp file using the provided HTTP client.
+// This function enables dependency injection for testing.
+func downloadToTempWithClient(ctx context.Context, client HTTPClient, url string) (*os.File, int64, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return nil, 0, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("User-Agent", "labctl/1.0")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("HTTP request: %w", err)
 	}
