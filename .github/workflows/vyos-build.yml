@@ -166,7 +166,7 @@ jobs:
 
   # Build container image for integration testing
   build-container:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     runs-on: warp-ubuntu-latest-x64-8x
     needs: validate
     steps:
