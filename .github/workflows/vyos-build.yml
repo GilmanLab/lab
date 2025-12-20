@@ -120,15 +120,29 @@ jobs:
             vyos/vyos-build:current \
             bash -c "sudo ./build-vyos-image --architecture amd64 --build-by ci@lab.gilman.io --build-type release --version ${VERSION} gateway"
 
-          # Find and move the output image
-          find /tmp/vyos-build/build -name "*.raw" -exec cp {} /tmp/vyos-gateway.raw \;
+          # Find and move the output image (suppress permission denied errors)
+          echo "Looking for .raw image in build output..."
+          ls -la /tmp/vyos-build/ || true
 
-          if [[ ! -f /tmp/vyos-gateway.raw ]]; then
+          # The raw image is created in the vyos-build root directory
+          RAW_FILE=$(find /tmp/vyos-build -maxdepth 1 -name "*.raw" -type f 2>/dev/null | head -1)
+
+          if [[ -z "${RAW_FILE}" ]]; then
+            echo "No .raw file in root, checking build directory..."
+            RAW_FILE=$(find /tmp/vyos-build/build -name "*.raw" -type f 2>/dev/null | head -1)
+          fi
+
+          if [[ -z "${RAW_FILE}" || ! -f "${RAW_FILE}" ]]; then
             echo "ERROR: Build failed - no raw image found"
-            ls -la /tmp/vyos-build/build/ || true
+            echo "Contents of /tmp/vyos-build:"
+            ls -la /tmp/vyos-build/ || true
+            echo "Contents of /tmp/vyos-build/build:"
+            ls -la /tmp/vyos-build/build/ 2>/dev/null || true
             exit 1
           fi
 
+          echo "Found raw image: ${RAW_FILE}"
+          cp "${RAW_FILE}" /tmp/vyos-gateway.raw
           echo "Build complete: /tmp/vyos-gateway.raw"
           ls -lah /tmp/vyos-gateway.raw
 
