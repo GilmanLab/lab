@@ -33,9 +33,8 @@ spec:
   defaults:
     # Default destination bucket path prefix
     destinationPrefix: images/
-    # Default validation strategy
+    # Default validation algorithm
     validation:
-      type: checksum
       algorithm: sha256
 
   images:
@@ -50,7 +49,6 @@ spec:
       destination:
         path: talos/talos-1.9.1-amd64.raw
       validation:
-        type: checksum
         algorithm: sha256
         expected: sha256:def456...  # Post-decompression checksum
 
@@ -119,9 +117,8 @@ type Destination struct {
 }
 
 type Validation struct {
-    Type      string `yaml:"type"`      // "checksum" | "none"
     Algorithm string `yaml:"algorithm"` // "sha256" | "sha512"
-    Expected  string `yaml:"expected,omitempty"`
+    Expected  string `yaml:"expected"`  // Required: post-processing checksum
 }
 
 // e2.sops.yaml structure (decrypted)
@@ -322,6 +319,14 @@ labctl images validate [--manifest PATH]
     Validate the manifest syntax and check source availability.
     Does not require credentials.
 
+    Checks performed:
+    - YAML syntax and schema validation
+    - HTTP sources: HEAD request to verify URL exists and get Content-Length
+    - Packer sources: Verify directory exists and contains *.pkr.hcl files
+    - All URLs use HTTPS
+    - All HTTP sources have source.checksum specified
+    - Decompressed sources have validation.expected specified
+
 labctl images list [flags]
     List images currently stored in e2.
 
@@ -404,7 +409,15 @@ labctl images prune [flags]
 | Strategy | Use Case | Implementation |
 |:---------|:---------|:---------------|
 | `checksum` | HTTP downloads, post-build verification | SHA256/SHA512 hash comparison |
-| `none` | Trusted sources where checksum unavailable | Skip validation |
+
+> **Security Policy:** All HTTP sources MUST use HTTPS and specify a `source.checksum`.
+> The `validation: none` option is intentionally omitted - every image must be validated.
+
+**Enforced Requirements:**
+- HTTP URLs must use `https://` scheme (CLI rejects `http://`)
+- `source.checksum` is required for all HTTP sources (pre-download verification)
+- `validation.expected` is required when `decompress` is used (post-decompression verification)
+- Packer sources compute checksum after build (stored in metadata for future comparison)
 
 **Checksum Workflow:**
 
@@ -460,6 +473,32 @@ lab-images/                          # Bucket name
 }
 ```
 
+#### Checksum Storage and Idempotency
+
+Checksums are stored in the metadata JSON file, **not** derived from S3 ETags (which are unreliable for multipart uploads).
+
+**Sync Idempotency Flow:**
+
+```
+1. Parse manifest, get expected checksum for image
+2. Check if metadata/<path>.json exists in S3
+   ├── No  → Image missing, proceed to acquire/upload
+   └── Yes → Read metadata, compare checksum
+             ├── Match    → Skip (already uploaded)
+             └── Mismatch → Re-acquire and upload (unless immutable)
+3. After upload, write metadata/<path>.json with computed checksum
+```
+
+**Checksum Comparison:**
+- For HTTP sources: Compare manifest `validation.expected` against stored `checksum`
+- For Packer sources: Checksum computed after build, compared against stored `checksum`
+- `--force` bypasses comparison and always re-uploads
+
+**Upload Behavior:**
+- Same path can be overwritten (mutable uploads)
+- `--force` forces re-upload regardless of checksum match
+- Metadata is always updated on upload
+
 ### 6.6 GitHub Actions Workflow
 
 ```yaml
@@ -471,7 +510,7 @@ on:
     branches: [main]
     paths:
       - 'images/**'
-      - 'infrastructure/*/packer/**'
+      - 'infrastructure/**/packer/**'  # Recursive match for nested paths
   workflow_dispatch:
     inputs:
       force:
@@ -479,6 +518,16 @@ on:
         required: false
         type: boolean
         default: false
+      prune:
+        description: 'Run prune after sync'
+        required: false
+        type: boolean
+        default: false
+
+# Prevent concurrent runs to avoid sync/prune race conditions
+concurrency:
+  group: images-sync
+  cancel-in-progress: false  # Let running jobs complete
 
 jobs:
   sync:
@@ -494,9 +543,9 @@ jobs:
           go-version: '1.23'
 
       - name: Setup Packer
-        uses: hashicorp/setup-packer@main
+        uses: hashicorp/setup-packer@v3.1.0  # Pin to specific version
         with:
-          version: '1.11'
+          version: '1.11.2'
 
       - name: Build labctl
         run: go build -o labctl ./tools/labctl
@@ -521,11 +570,16 @@ jobs:
             $FLAGS
 
       - name: Prune Orphaned Images
+        if: inputs.prune == true
         run: |
           ./labctl images prune \
             --credentials images/e2.sops.yaml \
             --sops-age-key-file /tmp/age-key.txt
 ```
+
+> **Note:** Prune is manual-only (`workflow_dispatch` with `prune: true`) to prevent
+> accidental deletion. Automatic pruning on every sync risks race conditions and
+> unintended image removal.
 
 **Workflow Characteristics:**
 - **Triggers:** Push to main (relevant paths) or manual dispatch
@@ -550,10 +604,11 @@ e2 credentials are stored encrypted in Git using SOPS with age encryption:
 
 ```yaml
 # images/e2.sops.yaml (encrypted)
+# Only access_key and secret_key are sensitive; endpoint/bucket are public
 access_key: ENC[AES256_GCM,data:...,type:str]
 secret_key: ENC[AES256_GCM,data:...,type:str]
-endpoint: ENC[AES256_GCM,data:...,type:str]
-bucket: ENC[AES256_GCM,data:...,type:str]
+endpoint: https://e2.idrive.com        # Not encrypted (public endpoint)
+bucket: lab-images                      # Not encrypted (public bucket name)
 sops:
     age:
         - recipient: age1...
@@ -709,7 +764,6 @@ spec:
   defaults:
     destinationPrefix: images/
     validation:
-      type: checksum
       algorithm: sha256
 
   images:
@@ -723,7 +777,6 @@ spec:
       destination:
         path: talos/talos-1.9.1-amd64.raw
       validation:
-        type: checksum
         algorithm: sha256
         expected: sha256:...
 
@@ -757,12 +810,17 @@ spec:
    - Generate per-build in workflow (recommended)
    - Store in SOPS-encrypted file alongside e2 credentials
 
-2. **Image Retention:** How long should old image versions be retained? Options:
-   - Keep last N versions
-   - Explicit deletion only via manifest removal (recommended - simpler)
-   - Time-based expiration
+2. **Parallel Builds:** Should Packer builds run in parallel? Consider GitHub Actions runner resources.
 
-3. **Parallel Builds:** Should Packer builds run in parallel? Consider GitHub Actions runner resources.
+## 8.1 Resolved Decisions
+
+| Question | Decision |
+|:---------|:---------|
+| **Image Retention** | Explicit deletion only via manifest removal + manual prune |
+| **Upload Immutability** | Mutable - same path can be overwritten; `--force` bypasses checksum |
+| **Validate Behavior** | HEAD requests for HTTP, directory check for Packer (no builds) |
+| **HTTPS Requirement** | Enforced - CLI rejects `http://` URLs |
+| **Checksum Requirement** | Enforced - all HTTP sources must specify `source.checksum` |
 
 ---
 
