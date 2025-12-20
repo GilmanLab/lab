@@ -2,14 +2,11 @@ name: Build VyOS Image
 
 on:
   push:
-    branches:
-      - master
-      - joshuagilman/hom-24-introduce-containerlab-integration-tests-for-vyos-gateway
+    branches: [master]
     paths:
       - 'infrastructure/network/vyos/**'
   pull_request:
     paths:
-      - '.github/workflows/vyos-build.yml'
       - 'infrastructure/network/vyos/**'
   workflow_dispatch:
     inputs:
@@ -61,7 +58,7 @@ jobs:
           done
 
   build:
-    if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: warp-ubuntu-latest-x64-8x
     needs: validate
     steps:
@@ -166,7 +163,7 @@ jobs:
 
   # Build container image for integration testing
   build-container:
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    if: github.event_name == 'pull_request'
     runs-on: warp-ubuntu-latest-x64-8x
     needs: validate
     steps:
