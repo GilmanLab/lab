@@ -465,6 +465,7 @@ lab-images/                          # Bucket name
 **Metadata Schema:**
 
 ```json
+// HTTP source metadata
 {
   "name": "talos-1.9.1",
   "checksum": "sha256:abc123...",
@@ -475,6 +476,19 @@ lab-images/                          # Bucket name
     "url": "https://factory.talos.dev/..."
   }
 }
+
+// Packer source metadata (includes sourceFingerprint)
+{
+  "name": "vyos-gateway",
+  "checksum": "sha256:def456...",
+  "size": 8589934592,
+  "uploadedAt": "2024-12-20T10:00:00Z",
+  "source": {
+    "type": "packer",
+    "path": "infrastructure/network/vyos/packer"
+  },
+  "sourceFingerprint": "sha256:789abc..."
+}
 ```
 
 #### Checksum Storage and Idempotency
@@ -484,19 +498,35 @@ Checksums are stored in the metadata JSON file, **not** derived from S3 ETags (w
 **Sync Idempotency Flow:**
 
 ```
-1. Parse manifest, get expected checksum for image
+HTTP Sources:
+1. Compute effective checksum: validation.expected ?? source.checksum
 2. Check if metadata/<path>.json exists in S3
-   ├── No  → Image missing, proceed to acquire/upload
-   └── Yes → Read metadata, compare checksum
+   ├── No  → Download and upload
+   └── Yes → Compare effective checksum against stored checksum
              ├── Match    → Skip (already uploaded)
-             └── Mismatch → Re-acquire and upload
-3. After upload, write metadata/<path>.json with computed checksum
+             └── Mismatch → Re-download and upload
+3. After upload, write metadata with checksum
+
+Packer Sources:
+1. Compute source fingerprint: SHA256(template files + sorted variables)
+2. Check if metadata/<path>.json exists in S3
+   ├── No  → Build and upload
+   └── Yes → Compare source fingerprint against stored sourceFingerprint
+             ├── Match    → Skip (inputs unchanged, assume output unchanged)
+             └── Mismatch → Rebuild and upload
+3. After upload, write metadata with checksum AND sourceFingerprint
 ```
 
-**Checksum Comparison:**
-- For HTTP sources: Compare manifest `validation.expected` against stored `checksum`
-- For Packer sources: Checksum computed after build, compared against stored `checksum`
-- `--force` bypasses comparison and always re-uploads
+**Checksum Comparison (HTTP):**
+- Effective checksum = `validation.expected` if specified, else `source.checksum`
+- Compare effective checksum against stored `metadata.checksum`
+- `--force` bypasses comparison and always re-downloads/uploads
+
+**Source Fingerprint (Packer):**
+- Fingerprint = SHA256 of: all `*.pkr.hcl` files in source.path + sorted JSON of source.variables
+- Stored in `metadata.sourceFingerprint`
+- If fingerprint matches, skip rebuild (inputs unchanged → output unchanged)
+- `--force` bypasses fingerprint check and always rebuilds
 
 **Upload Behavior:**
 - Same path can be overwritten (mutable uploads)
