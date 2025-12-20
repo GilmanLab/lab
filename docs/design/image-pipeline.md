@@ -165,7 +165,8 @@ labctl images sync [flags]
     --force                   Force re-upload even if checksums match
 
 labctl images validate [--manifest PATH]
-    Validate manifest syntax and check source URLs (HEAD requests).
+    Validate manifest syntax, check source URLs (HEAD requests), and verify
+    updateFile regex patterns compile successfully.
 
 labctl images list [flags]
     List images stored in e2.
@@ -182,12 +183,16 @@ labctl images prune [flags]
 
 labctl images upload [flags]
     Upload a local file to e2. Used by Packer workflows to upload built images.
+    Computes SHA256 checksum and writes metadata JSON (same format as sync).
 
     --source PATH             Path to local file to upload (required)
     --destination PATH        Destination path in e2 bucket (required)
     --credentials PATH        Path to SOPS-encrypted credentials file
     --sops-age-key-file PATH  Path to age private key
     --name STRING             Image name for metadata (defaults to destination filename)
+
+    Metadata written to: metadata/<destination>.json
+    Example: --destination vyos/vyos-gateway.raw → metadata/vyos/vyos-gateway.raw.json
 ```
 
 **CLI Output Contract:**
