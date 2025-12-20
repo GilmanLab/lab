@@ -1,0 +1,45 @@
+name: labctl
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'tools/labctl/**'
+  pull_request:
+    paths:
+      - 'tools/labctl/**'
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/labctl
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/labctl/go.mod
+          cache-dependency-path: tools/labctl/go.sum
+
+      - name: Format check
+        run: |
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "Files not formatted:"
+            gofmt -l .
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: tools/labctl
+
+      - name: Test
+        run: go test -race ./...
