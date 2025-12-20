@@ -10,7 +10,7 @@ The "Genesis" sequence bootstraps the entire infrastructure from bare metal to a
 
 ### Prerequisites
 - Physical hardware cabled and powered
-- VyOS image built with Packer (baked-in configuration)
+- VyOS image built with vyos-build (baked-in configuration)
 - Synology NAS available with Talos VM capability
 
 ### Sequence

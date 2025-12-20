@@ -7,8 +7,8 @@
 
 The lab requires machine images (Talos, VyOS, Harvester) to be available on the Synology NAS for PXE provisioning via Tinkerbell. Images come from two sources:
 
-1. **HTTP downloads** — Pre-built images from vendors (Talos Factory, Rancher, VyOS)
-2. **Packer builds** — Custom images built from ISO + configuration (VyOS gateway)
+1. **HTTP downloads** — Pre-built images from vendors (Talos Factory, Rancher)
+2. **vyos-build** — Custom VyOS images built via Docker with configuration baked in (VyOS gateway)
 
 We need a GitOps-friendly pipeline to:
 - Declaratively define required images in Git
@@ -61,7 +61,7 @@ Store images as GitHub Release assets. Script on NAS polls for new releases.
 │  │  2. Parse images/images.yaml                                     │   │
 │  │  3. For each image:                                              │   │
 │  │     - HTTP: Download → Verify → Decompress                       │   │
-│  │     - Packer: Build → Collect artifact                           │   │
+│  │     - vyos-build: Build in container → Collect artifact          │   │
 │  │  4. Upload to iDrive e2                                          │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────┬──────────────────────────────────────┘

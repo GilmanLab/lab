@@ -1,42 +1,37 @@
 #!/usr/bin/env bash
 # Build VyOS Gateway Image
-# Creates a raw disk image for the VP6630 gateway router
+# Creates a raw disk image for the VP6630 gateway router using vyos-build
 #
 # Prerequisites:
-#   - Packer >= 1.9.0
-#   - QEMU with KVM support
-#   - VyOS ISO (downloaded automatically or provided)
+#   - Docker
+#   - SSH public key
 #
 # Usage:
 #   ./build-vyos-image.sh [options]
 #
 # Options:
-#   -i, --iso PATH       Path to VyOS ISO (skips download)
-#   -o, --output DIR     Output directory (default: output-vyos)
+#   -o, --output DIR     Output directory (default: ./output-vyos)
 #   -k, --ssh-key PATH   SSH public key file (default: ~/.ssh/id_rsa.pub)
+#   -v, --version VER    VyOS version string (default: timestamp)
 #   -h, --help           Show this help message
 #
-# Network configuration is defined in:
-#   infrastructure/network/vyos/configs/gateway.conf
+# Network configuration is embedded in the build flavor at:
+#   infrastructure/network/vyos/vyos-build/build-flavors/gateway.toml
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
-PACKER_DIR="${REPO_ROOT}/infrastructure/network/vyos/packer"
+VYOS_BUILD_DIR="${REPO_ROOT}/infrastructure/network/vyos/vyos-build"
 
 # Defaults
-VYOS_ISO=""
-OUTPUT_DIR="${PACKER_DIR}/output-vyos"
+OUTPUT_DIR="${SCRIPT_DIR}/output-vyos"
 SSH_KEY_FILE="${HOME}/.ssh/id_rsa.pub"
-
-# VyOS download settings
-VYOS_VERSION="1.5-rolling-202412190007"
-VYOS_URL="https://github.com/vyos/vyos-rolling-nightly-builds/releases/download/${VYOS_VERSION}/vyos-${VYOS_VERSION}-amd64.iso"
-VYOS_CACHE_DIR="${HOME}/.cache/vyos"
+VERSION="$(date +%Y%m%d%H%M%S)"
+BUILD_BY="genesis@lab.gilman.io"
 
 usage() {
-    head -30 "$0" | grep -E '^#' | sed 's/^# \?//'
+    head -20 "$0" | grep -E '^#' | sed 's/^# \?//'
     exit 0
 }
 
@@ -52,17 +47,12 @@ error() {
 check_prerequisites() {
     log "Checking prerequisites..."
 
-    if ! command -v packer &>/dev/null; then
-        error "Packer not found. Install with: brew install packer"
+    if ! command -v docker &>/dev/null; then
+        error "Docker not found. Install Docker to continue."
     fi
 
-    if ! command -v qemu-system-x86_64 &>/dev/null; then
-        error "QEMU not found. Install with: brew install qemu"
-    fi
-
-    # Check KVM availability (Linux only)
-    if [[ "$(uname)" == "Linux" ]] && [[ ! -r /dev/kvm ]]; then
-        error "KVM not available. Ensure virtualization is enabled and you have access to /dev/kvm"
+    if ! docker info &>/dev/null; then
+        error "Docker daemon not running or not accessible."
     fi
 
     # Check SSH key exists
@@ -73,89 +63,85 @@ check_prerequisites() {
     log "Prerequisites satisfied"
 }
 
-download_vyos_iso() {
-    if [[ -n "${VYOS_ISO}" ]]; then
-        if [[ ! -f "${VYOS_ISO}" ]]; then
-            error "Specified ISO not found: ${VYOS_ISO}"
-        fi
-        log "Using provided ISO: ${VYOS_ISO}"
-        return
+generate_flavor() {
+    log "Generating build flavor with SSH credentials..."
+
+    # Extract SSH key components
+    SSH_KEY_TYPE=$(awk '{print $1}' "${SSH_KEY_FILE}")
+    SSH_KEY_BODY=$(awk '{print $2}' "${SSH_KEY_FILE}")
+
+    if [[ -z "${SSH_KEY_TYPE}" ]] || [[ -z "${SSH_KEY_BODY}" ]]; then
+        error "Invalid SSH public key format in ${SSH_KEY_FILE}"
     fi
 
-    mkdir -p "${VYOS_CACHE_DIR}"
-    VYOS_ISO="${VYOS_CACHE_DIR}/vyos-${VYOS_VERSION}-amd64.iso"
+    log "  SSH Key Type: ${SSH_KEY_TYPE}"
 
-    if [[ -f "${VYOS_ISO}" ]]; then
-        log "Using cached ISO: ${VYOS_ISO}"
-        return
+    # Create temp directory for build files
+    BUILD_TEMP=$(mktemp -d)
+    trap "rm -rf ${BUILD_TEMP}" EXIT
+
+    # Generate flavor from template
+    TEMPLATE_FILE="${VYOS_BUILD_DIR}/build-flavors/gateway.toml"
+    GENERATED_FLAVOR="${BUILD_TEMP}/gateway.toml"
+
+    if [[ ! -f "${TEMPLATE_FILE}" ]]; then
+        error "Flavor template not found: ${TEMPLATE_FILE}"
     fi
 
-    log "Downloading VyOS ${VYOS_VERSION}..."
-    log "URL: ${VYOS_URL}"
+    sed -e "s|%%SSH_KEY_TYPE%%|${SSH_KEY_TYPE}|g" \
+        -e "s|%%SSH_PUBLIC_KEY%%|${SSH_KEY_BODY}|g" \
+        "${TEMPLATE_FILE}" > "${GENERATED_FLAVOR}"
 
-    if ! curl -fSL -o "${VYOS_ISO}.tmp" "${VYOS_URL}"; then
-        rm -f "${VYOS_ISO}.tmp"
-        error "Failed to download VyOS ISO"
-    fi
-
-    mv "${VYOS_ISO}.tmp" "${VYOS_ISO}"
-    log "Downloaded: ${VYOS_ISO}"
+    log "Generated flavor: ${GENERATED_FLAVOR}"
 }
 
-get_ssh_key_type() {
-    # Extract key type (first field: ssh-rsa, ssh-ed25519, etc.)
-    awk '{print $1}' "${SSH_KEY_FILE}"
-}
-
-get_ssh_key_body() {
-    # Extract key body (second field: base64 encoded key)
-    awk '{print $2}' "${SSH_KEY_FILE}"
-}
-
-run_packer_build() {
-    log "Starting Packer build..."
-
-    cd "${PACKER_DIR}"
-
-    # Initialize Packer plugins
-    log "Initializing Packer plugins..."
-    packer init .
-
-    # Get SSH key type and body
-    SSH_KEY_TYPE=$(get_ssh_key_type)
-    SSH_KEY_BODY=$(get_ssh_key_body)
-
-    # Calculate ISO checksum
-    log "Calculating ISO checksum..."
-    if command -v sha256sum &>/dev/null; then
-        ISO_CHECKSUM="sha256:$(sha256sum "${VYOS_ISO}" | awk '{print $1}')"
-    else
-        ISO_CHECKSUM="sha256:$(shasum -a 256 "${VYOS_ISO}" | awk '{print $1}')"
-    fi
-
-    # Determine accelerator based on platform
-    if [[ "$(uname)" == "Darwin" ]]; then
-        ACCELERATOR="hvf"
-    else
-        ACCELERATOR="kvm"
-    fi
-
-    log "Building VyOS image..."
-    log "  ISO: ${VYOS_ISO}"
+run_vyos_build() {
+    log "Starting vyos-build..."
+    log "  Version: ${VERSION}"
+    log "  Build By: ${BUILD_BY}"
     log "  Output: ${OUTPUT_DIR}"
-    log "  SSH Key: ${SSH_KEY_FILE} (${SSH_KEY_TYPE})"
-    log "  Accelerator: ${ACCELERATOR}"
 
-    # Run Packer build
-    PACKER_LOG=1 packer build \
-        -var "vyos_iso_url=file://${VYOS_ISO}" \
-        -var "vyos_iso_checksum=${ISO_CHECKSUM}" \
-        -var "output_directory=${OUTPUT_DIR}" \
-        -var "ssh_key_type=${SSH_KEY_TYPE}" \
-        -var "ssh_public_key=${SSH_KEY_BODY}" \
-        .
+    mkdir -p "${OUTPUT_DIR}"
 
-    log "Packer build completed successfully!"
+    # Pull the vyos-build container
+    log "Pulling vyos-build container..."
+    docker pull vyos/vyos-build:current
+
+    # Run the build inside the container
+    # The container needs:
+    #   - Privileged mode for raw disk image creation
+    #   - /dev access for disk operations
+    #   - Generated flavor file copied to build-flavors directory
+    log "Running VyOS image build..."
+
+    docker run --rm --privileged \
+        -v "${BUILD_TEMP}/gateway.toml:/vyos/data/build-flavors/gateway.toml:ro" \
+        -v "${OUTPUT_DIR}:/output" \
+        -v /dev:/dev \
+        -e VYOS_BUILD_BY="${BUILD_BY}" \
+        -e VYOS_VERSION="${VERSION}" \
+        vyos/vyos-build:current \
+        bash -c "
+            set -e
+            echo 'Building VyOS gateway image...'
+            cd /vyos
+            sudo ./build-vyos-image \
+                --architecture amd64 \
+                --build-by '${BUILD_BY}' \
+                --build-type release \
+                --version '${VERSION}' \
+                gateway
+
+            echo 'Copying output files...'
+            if [ -d /vyos/build ]; then
+                cp -v /vyos/build/*.raw /output/ 2>/dev/null || true
+                cp -v /vyos/build/*.qcow2 /output/ 2>/dev/null || true
+            fi
+
+            echo 'Build complete!'
+        "
+
+    log "vyos-build completed successfully!"
 }
 
 show_results() {
@@ -164,33 +150,41 @@ show_results() {
     echo "VyOS Gateway Image Build Complete"
     echo "=============================================="
     echo ""
-    echo "Output image: ${OUTPUT_DIR}/vyos-lab.raw"
+    echo "Output directory: ${OUTPUT_DIR}"
+    if [[ -d "${OUTPUT_DIR}" ]]; then
+        echo ""
+        echo "Files:"
+        ls -lah "${OUTPUT_DIR}/"
+    fi
     echo ""
     echo "Next steps:"
-    echo "  1. Copy image to Tinkerbell NAS:"
-    echo "     scp ${OUTPUT_DIR}/vyos-lab.raw nas:/volume1/images/vyos-lab.raw"
+    echo "  1. Upload image to e2 storage for Synology Cloud Sync:"
+    echo "     labctl images upload ${OUTPUT_DIR}/vyos-*.raw"
     echo ""
-    echo "  2. Or write directly to USB/SSD for manual install:"
-    echo "     sudo dd if=${OUTPUT_DIR}/vyos-lab.raw of=/dev/sdX bs=4M status=progress"
+    echo "  2. Or copy directly to NAS:"
+    echo "     scp ${OUTPUT_DIR}/vyos-*.raw nas:/volume1/images/vyos/"
     echo ""
-    echo "To update network configuration, edit:"
-    echo "  infrastructure/network/vyos/configs/gateway.conf"
+    echo "  3. Or write directly to USB/SSD for manual install:"
+    echo "     sudo dd if=${OUTPUT_DIR}/vyos-*.raw of=/dev/sdX bs=4M status=progress"
+    echo ""
+    echo "Network configuration is embedded in the build flavor at:"
+    echo "  infrastructure/network/vyos/vyos-build/build-flavors/gateway.toml"
     echo ""
 }
 
 main() {
     while [[ $# -gt 0 ]]; do
         case $1 in
-            -i|--iso)
-                VYOS_ISO="$2"
-                shift 2
-                ;;
             -o|--output)
                 OUTPUT_DIR="$2"
                 shift 2
                 ;;
             -k|--ssh-key)
                 SSH_KEY_FILE="$2"
+                shift 2
+                ;;
+            -v|--version)
+                VERSION="$2"
                 shift 2
                 ;;
             -h|--help)
@@ -202,12 +196,12 @@ main() {
         esac
     done
 
-    log "VyOS Gateway Image Builder"
+    log "VyOS Gateway Image Builder (vyos-build)"
     log "Repository root: ${REPO_ROOT}"
 
     check_prerequisites
-    download_vyos_iso
-    run_packer_build
+    generate_flavor
+    run_vyos_build
     show_results
 }
 
