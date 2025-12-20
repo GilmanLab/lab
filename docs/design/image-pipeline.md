@@ -521,7 +521,7 @@ pull_request_rules:
       - label=automated
       - base=main
       - "#approved-reviews-by>=0"  # No approval required for bot PRs
-      - "check-success=Sync Images / sync"
+      - "check-success=Build VyOS Image / validate"
     actions:
       merge:
         method: squash
@@ -532,8 +532,11 @@ pull_request_rules:
 ```
 
 **Check Name Format:** `Workflow Name / Job Name`
-- `Sync Images / sync` — images-sync.yml
-- `Build VyOS Image / validate` — packer-vyos.yml (PR validation)
+
+**Why `Build VyOS Image / validate`?** The bot PR from `updateFile` modifies
+`infrastructure/.../source.auto.pkrvars.hcl`, which triggers `packer-vyos.yml`
+(not `images-sync.yml`). Using the Packer validate check ensures the PR is
+tested before auto-merge.
 
 ## 9. Security
 
