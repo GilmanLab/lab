@@ -326,6 +326,7 @@ jobs:
         run: |
           cd infrastructure/network/vyos/tests
           sudo containerlab deploy -t topology.clab.yml --reconfigure
+        timeout-minutes: 10
 
       - name: Wait for VyOS boot
         run: |
