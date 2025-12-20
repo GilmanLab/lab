@@ -1,0 +1,20 @@
+apiVersion: images.lab.gilman.io/v1alpha1
+kind: ImageManifest
+metadata:
+  name: lab-images
+spec:
+  images:
+    - name: vyos-iso
+      source:
+        # VyOS rolling nightly build
+        # Note: Update checksum after downloading and verifying the ISO
+        url: https://github.com/vyos/vyos-nightly-build/releases/download/2025.12.20-0020-rolling/vyos-2025.12.20-0020-rolling-generic-amd64.iso
+        checksum: sha256:7f9eb1d6d9aacbd8fb684bb384cf2251d987097993fe7dbead8653ffbde31d04
+      destination: vyos/vyos-2025.12.20-0020-rolling-generic-amd64.iso
+      updateFile:
+        path: infrastructure/network/vyos/packer/source.auto.pkrvars.hcl
+        replacements:
+          - pattern: 'vyos_iso_url\s*=\s*"[^"]*"'
+            value: 'vyos_iso_url = "{{ .Source.URL }}"'
+          - pattern: 'vyos_iso_checksum\s*=\s*"[^"]*"'
+            value: 'vyos_iso_checksum = "{{ .Source.Checksum }}"'
