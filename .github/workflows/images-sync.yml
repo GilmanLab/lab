@@ -44,6 +44,12 @@ jobs:
           cd tools/labctl
           go build -o ../../labctl .
 
+      - name: Install SOPS
+        run: |
+          curl -LO https://github.com/getsops/sops/releases/download/v3.9.2/sops-v3.9.2.linux.amd64
+          chmod +x sops-v3.9.2.linux.amd64
+          sudo mv sops-v3.9.2.linux.amd64 /usr/local/bin/sops
+
       # TESTING: Running full sync on PRs for verification
       - name: Write SOPS age key
         run: |
