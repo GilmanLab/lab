@@ -8,6 +8,7 @@ on:
   pull_request:
     paths:
       - 'infrastructure/network/vyos/packer/**'
+      - '.github/workflows/packer-vyos.yml'  # TESTING: trigger on workflow changes
   workflow_dispatch:
 
 concurrency:
@@ -16,7 +17,7 @@ concurrency:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-8x
     steps:
       - uses: actions/checkout@v4
 
@@ -37,9 +38,11 @@ jobs:
             infrastructure/network/vyos/packer
 
   build:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    # TESTING: Removed condition to run on PRs
+    runs-on: warp-ubuntu-latest-x64-8x
     needs: validate
+    env:
+      PACKER_LOG: 1  # Enable verbose logging
     steps:
       - uses: actions/checkout@v4
 
