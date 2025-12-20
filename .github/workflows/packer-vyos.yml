@@ -26,16 +26,18 @@ jobs:
           version: '1.11.2'
 
       - name: Packer Init
-        run: packer init infrastructure/network/vyos/packer
+        working-directory: infrastructure/network/vyos/packer
+        run: packer init .
 
       - name: Packer Validate
+        working-directory: infrastructure/network/vyos/packer
         run: |
           # Validate with dummy values for required vars without defaults
           # Note: vyos_iso_url/checksum come from source.auto.pkrvars.hcl (auto-loaded)
           packer validate \
             -var "ssh_key_type=ssh-ed25519" \
             -var "ssh_public_key=AAAA" \
-            infrastructure/network/vyos/packer
+            .
 
   build:
     # TESTING: Removed condition to run on PRs
@@ -77,9 +79,11 @@ jobs:
           version: '1.11.2'
 
       - name: Packer Init
-        run: packer init infrastructure/network/vyos/packer
+        working-directory: infrastructure/network/vyos/packer
+        run: packer init .
 
       - name: Packer Build
+        working-directory: infrastructure/network/vyos/packer
         run: |
           # Extract key type and body from public key
           # Note: vyos_iso_url/checksum auto-loaded from source.auto.pkrvars.hcl
@@ -88,7 +92,7 @@ jobs:
           packer build \
             -var "ssh_key_type=${SSH_KEY_TYPE}" \
             -var "ssh_public_key=${SSH_KEY_BODY}" \
-            infrastructure/network/vyos/packer
+            .
 
       - name: Upload to e2
         run: |
