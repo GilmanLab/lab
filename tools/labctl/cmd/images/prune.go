@@ -31,7 +31,7 @@ func init() {
 	pruneCmd.Flags().BoolVar(&pruneDryRun, "dry-run", false, "Show what would be removed")
 }
 
-func runPrune(cmd *cobra.Command, args []string) error {
+func runPrune(_ *cobra.Command, _ []string) error {
 	// TODO(HOM-20): Implement prune command
 	fmt.Println("prune command not yet implemented")
 	return nil

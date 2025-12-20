@@ -8,7 +8,7 @@ import (
 // Environment variable names for e2 credentials.
 const (
 	EnvAccessKey = "E2_ACCESS_KEY"
-	EnvSecretKey = "E2_SECRET_KEY"
+	EnvSecretKey = "E2_SECRET_KEY" //nolint:gosec // G101: This is the name of the environment variable
 	EnvEndpoint  = "E2_ENDPOINT"
 	EnvBucket    = "E2_BUCKET"
 )

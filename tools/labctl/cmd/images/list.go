@@ -23,7 +23,7 @@ func init() {
 	listCmd.Flags().StringVar(&listSOPSAgeKeyFile, "sops-age-key-file", "", "Path to age private key")
 }
 
-func runList(cmd *cobra.Command, args []string) error {
+func runList(_ *cobra.Command, _ []string) error {
 	// TODO(HOM-20): Implement list command
 	fmt.Println("list command not yet implemented")
 	return nil

@@ -33,7 +33,7 @@ func init() {
 	syncCmd.Flags().BoolVar(&syncForce, "force", false, "Force re-upload even if checksums match")
 }
 
-func runSync(cmd *cobra.Command, args []string) error {
+func runSync(_ *cobra.Command, _ []string) error {
 	// TODO(HOM-20): Implement sync command
 	fmt.Println("sync command not yet implemented")
 	return nil

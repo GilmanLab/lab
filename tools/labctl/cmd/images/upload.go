@@ -18,11 +18,11 @@ format as the sync command.`,
 }
 
 var (
-	uploadSource        string
-	uploadDestination   string
-	uploadCredentials   string
+	uploadSource         string
+	uploadDestination    string
+	uploadCredentials    string
 	uploadSOPSAgeKeyFile string
-	uploadName          string
+	uploadName           string
 )
 
 func init() {
@@ -36,7 +36,7 @@ func init() {
 	_ = uploadCmd.MarkFlagRequired("destination")
 }
 
-func runUpload(cmd *cobra.Command, args []string) error {
+func runUpload(_ *cobra.Command, _ []string) error {
 	// TODO(HOM-20): Implement upload command
 	fmt.Println("upload command not yet implemented")
 	return nil

@@ -23,7 +23,7 @@ func init() {
 	validateCmd.Flags().StringVar(&validateManifest, "manifest", "./images/images.yaml", "Path to images.yaml")
 }
 
-func runValidate(cmd *cobra.Command, args []string) error {
+func runValidate(_ *cobra.Command, _ []string) error {
 	// TODO(HOM-20): Implement validate command
 	fmt.Println("validate command not yet implemented")
 	return nil

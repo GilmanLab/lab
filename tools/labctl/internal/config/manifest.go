@@ -10,7 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Supported API version for the image manifest.
+// SupportedAPIVersion is the supported API version for the image manifest.
 const SupportedAPIVersion = "images.lab.gilman.io/v1alpha1"
 
 // ImageManifest represents the top-level image manifest configuration.
@@ -76,7 +76,7 @@ func (i *Image) EffectiveChecksum() string {
 
 // LoadManifest reads and parses an image manifest from a file.
 func LoadManifest(path string) (*ImageManifest, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: Path is provided by user
 	if err != nil {
 		return nil, fmt.Errorf("read manifest file: %w", err)
 	}

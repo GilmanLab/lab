@@ -307,7 +307,7 @@ spec:
         checksum: sha256:abc123
       destination: images/image.iso
 `
-		err := os.WriteFile(path, []byte(content), 0644)
+		err := os.WriteFile(path, []byte(content), 0o600)
 		require.NoError(t, err)
 
 		manifest, err := LoadManifest(path)

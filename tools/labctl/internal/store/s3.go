@@ -2,6 +2,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -36,9 +37,19 @@ type SourceMetadata struct {
 	Path string `json:"path,omitempty"`
 }
 
+// s3API defines the S3 operations used by S3Client.
+// This interface enables mocking for unit tests.
+type s3API interface {
+	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
+	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
+	ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
+}
+
 // S3Client wraps the AWS S3 client for image storage operations.
 type S3Client struct {
-	client *s3.Client
+	api    s3API
 	bucket string
 }
 
@@ -83,14 +94,22 @@ func NewS3Client(creds *labcreds.E2Credentials, opts ...S3Option) (*S3Client, er
 	})
 
 	return &S3Client{
-		client: client,
+		api:    client,
 		bucket: creds.Bucket,
 	}, nil
 }
 
+// newS3ClientWithAPI creates an S3Client with a custom API implementation (for testing).
+func newS3ClientWithAPI(api s3API, bucket string) *S3Client {
+	return &S3Client{
+		api:    api,
+		bucket: bucket,
+	}
+}
+
 // Upload uploads a file to the S3 bucket.
 func (c *S3Client) Upload(ctx context.Context, key string, body io.Reader, size int64) error {
-	_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
+	_, err := c.api.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:        aws.String(c.bucket),
 		Key:           aws.String(key),
 		Body:          body,
@@ -104,7 +123,7 @@ func (c *S3Client) Upload(ctx context.Context, key string, body io.Reader, size 
 
 // Download downloads a file from the S3 bucket.
 func (c *S3Client) Download(ctx context.Context, key string) (io.ReadCloser, error) {
-	output, err := c.client.GetObject(ctx, &s3.GetObjectInput{
+	output, err := c.api.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(c.bucket),
 		Key:    aws.String(key),
 	})
@@ -116,7 +135,7 @@ func (c *S3Client) Download(ctx context.Context, key string) (io.ReadCloser, err
 
 // Exists checks if an object exists in the S3 bucket.
 func (c *S3Client) Exists(ctx context.Context, key string) (bool, error) {
-	_, err := c.client.HeadObject(ctx, &s3.HeadObjectInput{
+	_, err := c.api.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(c.bucket),
 		Key:    aws.String(key),
 	})
@@ -143,7 +162,7 @@ func isNotFoundError(err error) bool {
 }
 
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsImpl(s, substr))
+	return len(s) >= len(substr) && (s == substr || s != "" && containsImpl(s, substr))
 }
 
 func containsImpl(s, substr string) bool {
@@ -158,20 +177,26 @@ func containsImpl(s, substr string) bool {
 // List lists all objects in the bucket with the given prefix.
 func (c *S3Client) List(ctx context.Context, prefix string) ([]string, error) {
 	var keys []string
+	var continuationToken *string
 
-	paginator := s3.NewListObjectsV2Paginator(c.client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(c.bucket),
-		Prefix: aws.String(prefix),
-	})
-
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
+	for {
+		output, err := c.api.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket:            aws.String(c.bucket),
+			Prefix:            aws.String(prefix),
+			ContinuationToken: continuationToken,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("list objects in s3://%s/%s: %w", c.bucket, prefix, err)
 		}
-		for _, obj := range page.Contents {
+
+		for _, obj := range output.Contents {
 			keys = append(keys, aws.ToString(obj.Key))
 		}
+
+		if !aws.ToBool(output.IsTruncated) {
+			break
+		}
+		continuationToken = output.NextContinuationToken
 	}
 
 	return keys, nil
@@ -179,7 +204,7 @@ func (c *S3Client) List(ctx context.Context, prefix string) ([]string, error) {
 
 // Delete deletes an object from the S3 bucket.
 func (c *S3Client) Delete(ctx context.Context, key string) error {
-	_, err := c.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+	_, err := c.api.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(c.bucket),
 		Key:    aws.String(key),
 	})
@@ -233,26 +258,7 @@ func (c *S3Client) PutMetadata(ctx context.Context, imagePath string, metadata *
 		return fmt.Errorf("marshal metadata: %w", err)
 	}
 
-	return c.Upload(ctx, key, newBytesReader(data), int64(len(data)))
-}
-
-// bytesReader wraps a byte slice to implement io.Reader.
-type bytesReader struct {
-	data []byte
-	pos  int
-}
-
-func newBytesReader(data []byte) *bytesReader {
-	return &bytesReader{data: data}
-}
-
-func (r *bytesReader) Read(p []byte) (n int, err error) {
-	if r.pos >= len(r.data) {
-		return 0, io.EOF
-	}
-	n = copy(p, r.data[r.pos:])
-	r.pos += n
-	return n, nil
+	return c.Upload(ctx, key, bytes.NewReader(data), int64(len(data)))
 }
 
 // ChecksumMatches checks if the stored metadata checksum matches the expected checksum.
