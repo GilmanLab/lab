@@ -508,7 +508,7 @@ HTTP Sources:
 3. After upload, write metadata with checksum
 
 Packer Sources:
-1. Compute source fingerprint: SHA256(template files + sorted variables)
+1. Compute source fingerprint: SHA256(all files in source.path + sorted variables)
 2. Check if metadata/<path>.json exists in S3
    ├── No  → Build and upload
    └── Yes → Compare source fingerprint against stored sourceFingerprint
@@ -523,10 +523,16 @@ Packer Sources:
 - `--force` bypasses comparison and always re-downloads/uploads
 
 **Source Fingerprint (Packer):**
-- Fingerprint = SHA256 of: all `*.pkr.hcl` files in source.path + sorted JSON of source.variables
+- Fingerprint = SHA256 of: all files in source.path (recursive) + sorted JSON of source.variables
+- Includes: templates (`*.pkr.hcl`), scripts, cloud-init configs, preseed files, etc.
+- Excludes: `output/` directory, `.gitignore`'d files
 - Stored in `metadata.sourceFingerprint`
 - If fingerprint matches, skip rebuild (inputs unchanged → output unchanged)
 - `--force` bypasses fingerprint check and always rebuilds
+
+> **Why all files?** Packer templates often reference local files (provisioner scripts,
+> http directory contents, variable files). Hashing only `*.pkr.hcl` would miss changes
+> to these referenced files and incorrectly skip rebuilds.
 
 **Upload Behavior:**
 - Same path can be overwritten (mutable uploads)
