@@ -1,0 +1,82 @@
+name: Sync Images
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'images/**'
+  pull_request:
+    paths:
+      - 'images/**'
+      - '.github/workflows/images-sync.yml'  # TESTING: trigger on workflow changes
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force re-upload all images'
+        type: boolean
+        default: false
+      prune:
+        description: 'Run prune after sync'
+        type: boolean
+        default: false
+
+concurrency:
+  group: images-sync-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: tools/labctl/go.sum
+
+      - name: Build labctl
+        run: go build -o labctl ./tools/labctl
+
+      # TESTING: Running full sync on PRs for verification
+      - name: Write SOPS age key
+        run: |
+          echo "${{ secrets.SOPS_AGE_KEY }}" > /tmp/age-key.txt
+          chmod 600 /tmp/age-key.txt
+
+      - name: Sync Images
+        id: sync
+        run: |
+          FLAGS=""
+          if [ "${{ inputs.force }}" == "true" ]; then FLAGS="--force"; fi
+
+          ./labctl images sync \
+            --credentials images/e2.sops.yaml \
+            --sops-age-key-file /tmp/age-key.txt \
+            $FLAGS
+
+      - name: Create PR if files changed
+        if: github.event_name == 'push' && steps.sync.outputs.files_changed == 'true'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'chore: update source image references'
+          title: 'chore: update source image references'
+          body: |
+            Automated update of source image references.
+
+            Updated by `labctl images sync`.
+          branch: automated/image-updates
+          labels: automated
+          delete-branch: true
+
+      - name: Prune Orphaned Images
+        if: github.event_name != 'pull_request' && inputs.prune == true
+        run: |
+          ./labctl images prune \
+            --credentials images/e2.sops.yaml \
+            --sops-age-key-file /tmp/age-key.txt

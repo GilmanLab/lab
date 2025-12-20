@@ -1,0 +1,15 @@
+pull_request_rules:
+  - name: Auto-merge automated image updates
+    conditions:
+      - author=github-actions[bot]
+      - label=automated
+      - base=master
+      - "#approved-reviews-by>=0"
+      - "check-success=Build VyOS Image / validate"
+    actions:
+      merge:
+        method: squash
+        commit_message_template: |
+          {{ title }}
+
+          {{ body }}
