@@ -123,10 +123,11 @@ tools/
 └── labctl/
     ├── cmd/
     │   └── images/
-    │       ├── sync.go       # Download, upload, update files, create PR
+    │       ├── sync.go       # Download, upload, update files, set outputs
     │       ├── validate.go   # Check manifest syntax and URLs
     │       ├── list.go       # List stored images
-    │       └── prune.go      # Remove orphaned images
+    │       ├── prune.go      # Remove orphaned images
+    │       └── upload.go     # Upload local file to e2
     ├── internal/
     │   ├── config/
     │   │   └── manifest.go   # YAML parsing
@@ -143,6 +144,7 @@ tools/
 images/
 ├── images.yaml               # Image manifest
 ├── e2.sops.yaml              # e2 credentials (SOPS encrypted)
+├── packer-ssh.sops.yaml      # Packer SSH keypair (SOPS encrypted)
 └── .sops.yaml                # SOPS config (age + PGP keys)
 
 .github/workflows/
@@ -177,6 +179,25 @@ labctl images prune [flags]
     --credentials PATH        Path to SOPS-encrypted credentials file
     --sops-age-key-file PATH  Path to age private key
     --dry-run                 Show what would be removed
+
+labctl images upload [flags]
+    Upload a local file to e2. Used by Packer workflows to upload built images.
+
+    --source PATH             Path to local file to upload (required)
+    --destination PATH        Destination path in e2 bucket (required)
+    --credentials PATH        Path to SOPS-encrypted credentials file
+    --sops-age-key-file PATH  Path to age private key
+    --name STRING             Image name for metadata (defaults to destination filename)
+```
+
+**CLI Output Contract:**
+
+The `sync` command sets GitHub Actions outputs via `$GITHUB_OUTPUT`:
+- `files_changed=true|false` — Whether any `updateFile` replacements modified files
+
+Example implementation:
+```bash
+echo "files_changed=true" >> "$GITHUB_OUTPUT"
 ```
 
 **Credential Resolution Order:**
@@ -374,6 +395,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Build labctl
+        run: go build -o labctl ./tools/labctl
+
+      - name: Write SOPS age key
+        run: |
+          echo "${{ secrets.SOPS_AGE_KEY }}" > /tmp/age-key.txt
+          chmod 600 /tmp/age-key.txt
+
+      - name: Extract SSH keypair
+        run: |
+          sops --decrypt --age-key-file /tmp/age-key.txt \
+            --extract '["ssh_public_key"]' images/packer-ssh.sops.yaml > /tmp/ssh_key.pub
+          sops --decrypt --age-key-file /tmp/age-key.txt \
+            --extract '["ssh_private_key"]' images/packer-ssh.sops.yaml > /tmp/ssh_key
+          chmod 600 /tmp/ssh_key
+
       - uses: hashicorp/setup-packer@v3.1.0
         with:
           version: '1.11.2'
@@ -383,19 +424,16 @@ jobs:
 
       - name: Packer Build
         run: |
+          # Extract key type and body from public key
+          SSH_KEY_TYPE=$(awk '{print $1}' /tmp/ssh_key.pub)
+          SSH_KEY_BODY=$(awk '{print $2}' /tmp/ssh_key.pub)
           packer build \
-            -var "ssh_public_key=$(cat ~/.ssh/id_ed25519.pub)" \
+            -var "ssh_key_type=${SSH_KEY_TYPE}" \
+            -var "ssh_public_key=${SSH_KEY_BODY}" \
             infrastructure/network/vyos/packer
-
-      - name: Write SOPS age key
-        run: |
-          echo "${{ secrets.SOPS_AGE_KEY }}" > /tmp/age-key.txt
-          chmod 600 /tmp/age-key.txt
 
       - name: Upload to e2
         run: |
-          # Use AWS CLI or labctl to upload
-          # Output is at infrastructure/network/vyos/packer/output/vyos-lab.raw
           ./labctl images upload \
             --credentials images/e2.sops.yaml \
             --sops-age-key-file /tmp/age-key.txt \
@@ -413,7 +451,7 @@ pull_request_rules:
       - label=automated
       - base=main
       - "#approved-reviews-by>=0"  # No approval required for bot PRs
-      - check-success=sync         # CI must pass
+      - "check-success=Sync Images / sync"  # Format: Workflow Name / Job Name
     actions:
       merge:
         method: squash
@@ -439,6 +477,39 @@ sops:
     pgp:
         - XXXX...             # Yubikey
     encrypted_regex: ^(access_key|secret_key)$
+```
+
+### SOPS-Encrypted SSH Keypair
+
+Used by Packer builds for VM provisioning. Generate once and store encrypted:
+
+```bash
+# Generate keypair
+ssh-keygen -t ed25519 -f packer-ssh -N "" -C "packer-ci"
+
+# Create SOPS file
+cat > images/packer-ssh.sops.yaml << 'EOF'
+ssh_public_key: "ssh-ed25519 AAAA... packer-ci"
+ssh_private_key: |
+  -----BEGIN OPENSSH PRIVATE KEY-----
+  ...
+  -----END OPENSSH PRIVATE KEY-----
+EOF
+
+# Encrypt
+sops --encrypt --in-place images/packer-ssh.sops.yaml
+```
+
+```yaml
+# images/packer-ssh.sops.yaml (encrypted)
+ssh_public_key: ENC[AES256_GCM,data:...,type:str]
+ssh_private_key: ENC[AES256_GCM,data:...,type:str]
+sops:
+    age:
+        - recipient: age1...  # CI key
+    pgp:
+        - XXXX...             # Yubikey
+    encrypted_regex: ^(ssh_public_key|ssh_private_key)$
 ```
 
 ```yaml
@@ -471,8 +542,7 @@ Configured manually on NAS (not GitOps-managed):
 
 ## 11. Open Questions
 
-1. **Packer SSH Keys:** Generate per-build in workflow or store encrypted?
-2. **Image Retention:** Keep all versions until explicit prune, or auto-expire?
+1. **Image Retention:** Keep all versions until explicit prune, or auto-expire?
 
 ## 12. Future Considerations
 
