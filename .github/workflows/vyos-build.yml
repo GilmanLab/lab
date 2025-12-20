@@ -4,12 +4,10 @@ on:
   push:
     branches: [master]
     paths:
-      - 'infrastructure/network/vyos/vyos-build/**'
-      - 'infrastructure/network/vyos/configs/gateway.conf'
+      - 'infrastructure/network/vyos/**'
   pull_request:
     paths:
-      - 'infrastructure/network/vyos/vyos-build/**'
-      - 'infrastructure/network/vyos/configs/gateway.conf'
+      - 'infrastructure/network/vyos/**'
   workflow_dispatch:
     inputs:
       upload:
@@ -162,3 +160,231 @@ jobs:
           path: /tmp/vyos-gateway.raw
           retention-days: 7
           if-no-files-found: warn
+
+  # Build container image for integration testing
+  build-container:
+    if: github.event_name == 'pull_request'
+    runs-on: warp-ubuntu-latest-x64-8x
+    needs: validate
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache SOPS
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sops
+          key: sops-v3.9.2
+
+      - name: Install SOPS
+        run: |
+          if [[ -x "${HOME}/.cache/sops/sops" ]]; then
+            sudo cp "${HOME}/.cache/sops/sops" /usr/local/bin/sops
+            exit 0
+          fi
+          mkdir -p "${HOME}/.cache/sops"
+          curl -Lo "${HOME}/.cache/sops/sops" \
+            https://github.com/getsops/sops/releases/download/v3.9.2/sops-v3.9.2.linux.amd64
+          chmod +x "${HOME}/.cache/sops/sops"
+          sudo cp "${HOME}/.cache/sops/sops" /usr/local/bin/sops
+
+      - name: Write SOPS age key
+        run: |
+          echo "${{ secrets.SOPS_AGE_KEY }}" > /tmp/age-key.txt
+          chmod 600 /tmp/age-key.txt
+
+      - name: Extract SSH public key
+        env:
+          SOPS_AGE_KEY_FILE: /tmp/age-key.txt
+        run: |
+          sops --decrypt \
+            --extract '["ssh_public_key"]' images/packer-ssh.sops.yaml > /tmp/ssh_key.pub
+          echo "SSH key extracted"
+
+      - name: Clone vyos-build
+        run: |
+          git clone -b current --single-branch --depth 1 \
+            https://github.com/vyos/vyos-build.git /tmp/vyos-build
+
+      - name: Generate build flavor
+        run: |
+          ./infrastructure/network/vyos/vyos-build/scripts/generate-flavor.sh \
+            "$(cat /tmp/ssh_key.pub)" \
+            /tmp/vyos-build/data/build-flavors/gateway.toml
+
+      - name: Build VyOS ISO
+        run: |
+          # Generate version string
+          VERSION="test-$(date +%Y%m%d%H%M%S)"
+
+          # Build ISO (produces squashfs we need for container)
+          docker run --rm --privileged \
+            -v /tmp/vyos-build:/vyos \
+            -e VYOS_BUILD_BY="ci@lab.gilman.io" \
+            -w /vyos \
+            vyos/vyos-build:current \
+            bash -c "sudo ./build-vyos-image --architecture amd64 --build-by ci@lab.gilman.io --build-type release --version ${VERSION} gateway"
+
+          echo "Build complete, checking for squashfs..."
+          find /tmp/vyos-build -name "*.squashfs" -type f 2>/dev/null || true
+
+      - name: Install squashfs tools
+        run: sudo apt-get update && sudo apt-get install -y squashfs-tools-ng
+
+      - name: Build container image
+        run: |
+          cd /tmp/vyos-build
+
+          # Find the squashfs filesystem
+          SQUASHFS=$(find . -name "filesystem.squashfs" -type f 2>/dev/null | head -1)
+
+          if [[ -z "${SQUASHFS}" ]]; then
+            # Try alternative location
+            SQUASHFS=$(find . -name "*.squashfs" -type f 2>/dev/null | head -1)
+          fi
+
+          if [[ -z "${SQUASHFS}" || ! -f "${SQUASHFS}" ]]; then
+            echo "ERROR: squashfs not found"
+            find . -type f -name "*.squashfs" 2>/dev/null || true
+            ls -la build/ 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "Found squashfs: ${SQUASHFS}"
+
+          # Extract squashfs to tarball
+          sqfs2tar "${SQUASHFS}" > /tmp/rootfs.tar
+          echo "Extracted rootfs.tar: $(ls -lah /tmp/rootfs.tar)"
+
+          # Build container image
+          cd $GITHUB_WORKSPACE
+          cp /tmp/rootfs.tar .
+          docker build -t vyos-gateway:test -f infrastructure/network/vyos/Dockerfile.containerlab .
+          rm rootfs.tar
+
+          echo "Container image built successfully"
+          docker images vyos-gateway:test
+
+      - name: Save container image
+        run: |
+          docker save vyos-gateway:test -o /tmp/vyos-gateway-container.tar
+          ls -lah /tmp/vyos-gateway-container.tar
+
+      - name: Upload container image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vyos-container-image
+          path: /tmp/vyos-gateway-container.tar
+          retention-days: 1
+
+  # Run integration tests using Containerlab
+  integration-test:
+    needs: build-container
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download container image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vyos-container-image
+          path: /tmp
+
+      - name: Load container image
+        run: |
+          docker load -i /tmp/vyos-gateway-container.tar
+          docker images vyos-gateway:test
+
+      - name: Install Containerlab
+        run: |
+          if [[ -x "${HOME}/.cache/containerlab/containerlab" ]]; then
+            sudo cp "${HOME}/.cache/containerlab/containerlab" /usr/local/bin/containerlab
+          else
+            mkdir -p "${HOME}/.cache/containerlab"
+            bash -c "$(curl -sL https://get.containerlab.dev)"
+            BIN_PATH="$(command -v containerlab)"
+            sudo cp "${BIN_PATH}" "${HOME}/.cache/containerlab/containerlab"
+          fi
+          containerlab version
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: infrastructure/network/vyos/tests/requirements.txt
+
+      - name: Install test dependencies
+        run: |
+          pip install -r infrastructure/network/vyos/tests/requirements.txt
+
+      - name: Generate test config.boot
+        run: |
+          ssh-keygen -t ed25519 -f /tmp/vyos-test-key -N "" -C "vyos-ci"
+          chmod +x infrastructure/network/vyos/tests/render-config-boot.sh
+          infrastructure/network/vyos/tests/render-config-boot.sh "$(cat /tmp/vyos-test-key.pub)"
+
+      - name: Deploy Containerlab topology
+        run: |
+          cd infrastructure/network/vyos/tests
+          sudo containerlab deploy -t topology.clab.yml --reconfigure
+        timeout-minutes: 10
+
+      - name: Initialize VyOS config
+        run: |
+          CONTAINER="clab-vyos-gateway-test-gateway"
+          sudo docker exec "${CONTAINER}" sh -c "modprobe br_netfilter || true"
+          sudo docker exec "${CONTAINER}" sh -c "timeout 60 python3 /usr/libexec/vyos/vyos-boot-config-loader.py /opt/vyatta/etc/config/config.boot || true"
+
+      - name: Wait for VyOS boot
+        run: |
+          echo "Waiting for VyOS to boot..."
+          CONTAINER="clab-vyos-gateway-test-gateway"
+
+          # Wait for container to be running
+          for i in {1..30}; do
+            if docker ps --filter "name=${CONTAINER}" --filter "status=running" | grep -q "${CONTAINER}"; then
+              echo "Container is running"
+              break
+            fi
+            echo "Waiting for container... ($i/30)"
+            sleep 3
+          done
+
+          # Wait for systemd to be ready
+          for i in {1..60}; do
+            if docker exec "${CONTAINER}" systemctl is-system-running --quiet 2>/dev/null; then
+              echo "VyOS systemd is running"
+              break
+            fi
+            echo "Waiting for systemd... ($i/60)"
+            sleep 5
+          done
+
+          # Additional settle time for all services
+          echo "Waiting for services to stabilize..."
+          sleep 30
+
+          # Check VyOS status
+          docker exec "${CONTAINER}" /opt/vyatta/bin/vyatta-op-cmd-wrapper show version || true
+
+      - name: Run integration tests
+        run: |
+          cd infrastructure/network/vyos/tests
+          pytest -v --tb=short -x
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          CONTAINER="clab-vyos-gateway-test-gateway"
+          echo "=== Container logs ==="
+          docker logs "${CONTAINER}" 2>&1 | tail -100 || true
+          echo "=== VyOS configuration ==="
+          docker exec "${CONTAINER}" /opt/vyatta/bin/vyatta-op-cmd-wrapper show configuration 2>&1 || true
+          echo "=== Interfaces ==="
+          docker exec "${CONTAINER}" /opt/vyatta/bin/vyatta-op-cmd-wrapper show interfaces 2>&1 || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          cd infrastructure/network/vyos/tests
+          sudo containerlab destroy -t topology.clab.yml --cleanup || true

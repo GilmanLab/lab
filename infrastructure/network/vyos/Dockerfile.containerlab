@@ -1,0 +1,35 @@
+# VyOS Container Image for Containerlab Testing
+#
+# This Dockerfile builds a container image from the VyOS squashfs filesystem
+# produced by vyos-build. The container uses the same rootfs as the production
+# raw disk image, ensuring test fidelity.
+#
+# Usage:
+#   sqfs2tar build/live/filesystem.squashfs > rootfs.tar
+#   docker build -t vyos-gateway:test -f Dockerfile.containerlab .
+#
+# The resulting image can be used with Containerlab for integration testing.
+
+FROM scratch
+
+# Add the extracted squashfs filesystem
+ADD rootfs.tar /
+
+# Mask services/targets that don't work well in containers
+# - getty.target: No TTY in container
+# - auditd.service: Audit subsystem not available
+# - kea-dhcp-ddns-server.service: Not needed for testing
+# - reboot/poweroff/halt/kexec: prevent container shutdown loops
+RUN for service in getty.target auditd.service \
+        reboot.target poweroff.target halt.target kexec.target \
+        systemd-reboot.service systemd-poweroff.service systemd-halt.service systemd-kexec.service; do \
+        systemctl mask $service 2>/dev/null || true; \
+    done && \
+    systemctl disable kea-dhcp-ddns-server.service 2>/dev/null || true
+
+# Healthcheck to verify systemd is running
+HEALTHCHECK --start-period=30s --interval=10s --timeout=5s --retries=3 \
+    CMD systemctl is-system-running --quiet || exit 1
+
+# Start systemd as init
+CMD ["/sbin/init"]

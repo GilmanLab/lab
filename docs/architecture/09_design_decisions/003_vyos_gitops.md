@@ -174,8 +174,60 @@ VyOS `commit-confirm` provides automatic rollback:
 3. **Auditability**: Full Git history of all configuration changes
 4. **Existing Infrastructure**: Leverages existing Tailscale network
 
+## Integration Testing
+
+### Containerlab-Based Validation
+
+To validate configuration changes before they reach production, we use [Containerlab](https://containerlab.dev/) to run integration tests on pull requests.
+
+#### How It Works
+
+1. **Container Image Build**: The vyos-build pipeline produces a squashfs filesystem which is converted to a container image using `sqfs2tar` and a minimal Dockerfile.
+
+2. **Topology Simulation**: Containerlab deploys a test topology with:
+   - VyOS gateway container (same rootfs as production)
+   - Simulated network clients for WAN, MGMT, and Platform networks
+
+3. **Test Suite**: pytest with scrapli validates:
+   - Firewall groups and rules
+   - Interface configuration and addresses
+   - DHCP, DNS, and BGP configuration
+   - NAT/masquerade rules
+   - Static routes and system settings
+
+#### Test Files
+
+```
+infrastructure/network/vyos/
+├── Dockerfile.containerlab      # Container build from squashfs
+└── tests/
+    ├── topology.clab.yml        # Containerlab topology
+    ├── conftest.py              # pytest fixtures
+    ├── test_gateway.py          # Test suite
+    └── requirements.txt         # Python dependencies
+```
+
+#### Interface Mapping
+
+The test environment uses simplified interface mapping:
+
+| Production | Test | Network |
+|:-----------|:-----|:--------|
+| eth4 | eth1 | WAN |
+| eth5.10 | eth2 | MGMT (VLAN 10) |
+| eth5.30 | eth3 | Platform (VLAN 30) |
+
+#### CI Integration
+
+Integration tests run automatically on PRs modifying `infrastructure/network/vyos/**`:
+
+1. `build-container` job builds VyOS container from squashfs
+2. `integration-test` job deploys topology and runs pytest suite
+3. Tests must pass before merge
+
 ## Consequences
 
 - VyOS must run Tailscale client (or self-hosted runner needs lab network access)
 - Secrets (Tailscale OAuth, SSH keys) managed in GitHub Secrets
 - Initial effort to structure Ansible playbooks and test workflow
+- Integration tests add build time (~5-8 minutes) but catch issues before production
