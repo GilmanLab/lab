@@ -4,7 +4,7 @@ This directory contains the configuration and scripts for building custom VyOS g
 
 ## Overview
 
-Instead of using Packer with QEMU keystroke automation (brittle and slow), this approach:
+This approach:
 
 1. Uses the official `vyos/vyos-build` Docker container
 2. Bakes the gateway configuration directly into the image via build flavors
@@ -72,15 +72,3 @@ The configuration matches `infrastructure/network/vyos/configs/gateway.conf` wit
 |------|---------|
 | `configs/gateway.conf` | Source of truth for VyOS config (Ansible applies updates) |
 | `vyos-build/build-flavors/gateway.toml` | Build-time config with SSH credentials |
-| `packer/` | Legacy build (deprecated) |
-
-## Migration from Packer
-
-The Packer-based build (`infrastructure/network/vyos/packer/`) is deprecated. Key differences:
-
-| Aspect | Packer | vyos-build |
-|--------|--------|------------|
-| Build time | ~10 minutes | ~5 minutes |
-| Dependencies | QEMU + KVM | Docker only |
-| Config injection | SSH provisioner | Baked in image |
-| Reliability | Keystroke-dependent | Deterministic |

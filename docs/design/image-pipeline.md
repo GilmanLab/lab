@@ -5,13 +5,12 @@
 * **Goal:** Create a GitOps-driven pipeline that manages source images (ISOs, raw, qcow2) and distributes them to the lab via NAS/NFS.
 * **Input:** Declarative YAML configuration defining image sources, validation rules, and optional file updates.
 * **Output:** Validated images in iDrive e2 (S3-compatible), synced to Synology NAS via Cloud Sync.
-* **Key Constraint:** Downstream builds (Packer) are triggered via Git changes, not direct invocation.
 
 ## 2. Existing Context
 
 * **Language/Stack:** Go 1.23+, GitHub Actions, iDrive e2, Synology Cloud Sync, Mergify
 * **Relevant Files:**
-    * `infrastructure/network/vyos/packer/` - Existing Packer build (consumes source images)
+    * `infrastructure/network/vyos/vyos-build/` - VyOS image build using vyos-build toolchain
     * `docs/architecture/08_concepts/storage.md` - NFS storage architecture
 * **Style Guide:**
     * Configuration files use YAML
@@ -40,19 +39,12 @@ spec:
         algorithm: sha256
         expected: sha256:def456...  # Post-decompression checksum
 
-    # Source image that triggers downstream build
+    # VyOS ISO for reference/manual builds
     - name: vyos-iso
       source:
         url: https://github.com/vyos/vyos-rolling-nightly-builds/releases/download/1.5-rolling-202412190007/vyos-1.5-rolling-202412190007-amd64.iso
         checksum: sha256:abc123...
       destination: vyos/vyos-1.5-rolling-202412190007.iso
-      updateFile:
-        path: infrastructure/network/vyos/packer/source.auto.pkrvars.hcl
-        replacements:
-          - pattern: 'vyos_iso_url\s*=\s*"[^"]*"'
-            value: 'vyos_iso_url = "{{ .Source.URL }}"'
-          - pattern: 'vyos_iso_checksum\s*=\s*"[^"]*"'
-            value: 'vyos_iso_checksum = "{{ .Source.Checksum }}"'
 
     # Harvester ISO (no transformation)
     - name: harvester-1.4.0
@@ -144,12 +136,12 @@ tools/
 images/
 ├── images.yaml               # Image manifest
 ├── e2.sops.yaml              # e2 credentials (SOPS encrypted)
-├── packer-ssh.sops.yaml      # Packer SSH keypair (SOPS encrypted)
+├── packer-ssh.sops.yaml      # SSH keypair for image builds (SOPS encrypted)
 └── .sops.yaml                # SOPS config (age + PGP keys)
 
 .github/workflows/
 ├── images-sync.yml           # Source image pipeline
-└── packer-vyos.yml           # VyOS image build (triggered by file change)
+└── vyos-build.yml            # VyOS image build using vyos-build toolchain
 ```
 
 ## 4. CLI Interface
@@ -182,7 +174,7 @@ labctl images prune [flags]
     --dry-run                 Show what would be removed
 
 labctl images upload [flags]
-    Upload a local file to e2. Used by Packer workflows to upload built images.
+    Upload a local file to e2. Used by build workflows to upload built images.
     Computes SHA256 checksum and writes metadata JSON (same format as sync).
 
     --source PATH             Path to local file to upload (required)
@@ -242,9 +234,9 @@ echo "files_changed=true" >> "$GITHUB_OUTPUT"
 │                              Derived Images                                  │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  5. PACKER WORKFLOW (packer-vyos.yml)                                       │
-│     └─> Triggered by changes to source.auto.pkrvars.hcl                     │
-│         ├─> packer init && packer build                                     │
+│  5. VYOS BUILD WORKFLOW (vyos-build.yml)                                    │
+│     └─> Triggered by changes to vyos-build/ or configs/                     │
+│         ├─> Run vyos-build in Docker container                              │
 │         ├─> Upload built image to e2                                        │
 │         └─> Cloud Sync pulls to NAS                                         │
 │                                                                              │
@@ -277,7 +269,7 @@ echo "files_changed=true" >> "$GITHUB_OUTPUT"
   }
 }
 
-// For upload (local files, e.g., Packer output)
+// For upload (local files, e.g., vyos-build output)
 {
   "name": "vyos-gateway",
   "checksum": "sha256:def456...",
@@ -285,7 +277,7 @@ echo "files_changed=true" >> "$GITHUB_OUTPUT"
   "uploadedAt": "2024-12-20T12:00:00Z",
   "source": {
     "type": "local",
-    "path": "infrastructure/network/vyos/packer/output/vyos-lab.raw"
+    "path": "/tmp/vyos-gateway.raw"
   }
 }
 ```
@@ -299,7 +291,7 @@ lab-images/
 │   │   └── talos-1.9.1-amd64.raw
 │   ├── vyos/
 │   │   ├── vyos-1.5-rolling-202412190007.iso    # Source ISO
-│   │   └── vyos-gateway.raw                      # Built by Packer
+│   │   └── vyos-gateway.raw                      # Built by vyos-build
 │   └── harvester/
 │       └── harvester-1.4.0-amd64.iso
 └── metadata/
@@ -407,49 +399,54 @@ jobs:
             --sops-age-key-file /tmp/age-key.txt
 ```
 
-### 8.2 Packer Build (packer-vyos.yml)
+### 8.2 VyOS Build (vyos-build.yml)
 
 ```yaml
 name: Build VyOS Image
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     paths:
-      - 'infrastructure/network/vyos/packer/**'
+      - 'infrastructure/network/vyos/vyos-build/**'
+      - 'infrastructure/network/vyos/configs/gateway.conf'
   pull_request:
     paths:
-      - 'infrastructure/network/vyos/packer/**'
+      - 'infrastructure/network/vyos/vyos-build/**'
+      - 'infrastructure/network/vyos/configs/gateway.conf'
   workflow_dispatch:
+    inputs:
+      upload:
+        description: 'Upload image to e2 storage'
+        type: boolean
+        default: true
 
 concurrency:
-  group: packer-vyos-${{ github.ref }}
+  group: vyos-build-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  # Validate on PRs (fast, no build)
   validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: hashicorp/setup-packer@v3.1.0
-        with:
-          version: '1.11.2'
-
-      - name: Packer Init
-        run: packer init infrastructure/network/vyos/packer
-
-      - name: Packer Validate
+      - name: Validate flavor template
         run: |
-          # Validate with dummy values for required vars without defaults
-          # Note: vyos_iso_url/checksum come from source.auto.pkrvars.hcl (auto-loaded)
-          packer validate \
-            -var "ssh_key_type=ssh-ed25519" \
-            -var "ssh_public_key=AAAA" \
-            infrastructure/network/vyos/packer
+          TEMPLATE="infrastructure/network/vyos/vyos-build/build-flavors/gateway.toml"
+          if [[ ! -f "${TEMPLATE}" ]]; then
+            echo "ERROR: Template file not found"
+            exit 1
+          fi
+          if ! grep -q '%%SSH_KEY_TYPE%%' "${TEMPLATE}"; then
+            echo "ERROR: Template missing %%SSH_KEY_TYPE%% placeholder"
+            exit 1
+          fi
+          if ! grep -q '%%SSH_PUBLIC_KEY%%' "${TEMPLATE}"; then
+            echo "ERROR: Template missing %%SSH_PUBLIC_KEY%% placeholder"
+            exit 1
+          fi
 
-  # Build only on merge to main
   build:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -476,40 +473,49 @@ jobs:
           chmod 600 /tmp/age-key.txt
 
       - name: Extract SSH public key
+        env:
+          SOPS_AGE_KEY_FILE: /tmp/age-key.txt
         run: |
-          sops --decrypt --age-key-file /tmp/age-key.txt \
+          sops --decrypt \
             --extract '["ssh_public_key"]' images/packer-ssh.sops.yaml > /tmp/ssh_key.pub
 
-      - uses: hashicorp/setup-packer@v3.1.0
-        with:
-          version: '1.11.2'
-
-      - name: Packer Init
-        run: packer init infrastructure/network/vyos/packer
-
-      - name: Packer Build
+      - name: Clone vyos-build
         run: |
-          # Extract key type and body from public key
-          # Note: vyos_iso_url/checksum auto-loaded from source.auto.pkrvars.hcl
-          SSH_KEY_TYPE=$(awk '{print $1}' /tmp/ssh_key.pub)
-          SSH_KEY_BODY=$(awk '{print $2}' /tmp/ssh_key.pub)
-          packer build \
-            -var "ssh_key_type=${SSH_KEY_TYPE}" \
-            -var "ssh_public_key=${SSH_KEY_BODY}" \
-            infrastructure/network/vyos/packer
+          git clone -b current --single-branch --depth 1 \
+            https://github.com/vyos/vyos-build.git /tmp/vyos-build
+
+      - name: Generate build flavor
+        run: |
+          ./infrastructure/network/vyos/vyos-build/scripts/generate-flavor.sh \
+            "$(cat /tmp/ssh_key.pub)" \
+            /tmp/vyos-build/data/build-flavors/gateway.toml
+
+      - name: Build VyOS image
+        run: |
+          VERSION="lab-$(date +%Y%m%d%H%M%S)"
+          docker run --rm --privileged \
+            -v /tmp/vyos-build:/vyos \
+            -v /dev:/dev \
+            -w /vyos \
+            vyos/vyos-build:current \
+            bash -c "sudo ./build-vyos-image --architecture amd64 --build-by ci@lab.gilman.io --build-type release --version ${VERSION} gateway"
+
+          RAW_FILE=$(find /tmp/vyos-build -maxdepth 1 -name "*.raw" -type f 2>/dev/null | head -1)
+          cp "${RAW_FILE}" /tmp/vyos-gateway.raw
 
       - name: Upload to e2
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.upload)
         run: |
           ./labctl images upload \
             --credentials images/e2.sops.yaml \
             --sops-age-key-file /tmp/age-key.txt \
-            --source infrastructure/network/vyos/packer/output/vyos-lab.raw \
+            --source /tmp/vyos-gateway.raw \
             --destination vyos/vyos-gateway.raw
 ```
 
-**Packer Variable Loading:** Packer automatically loads `*.auto.pkrvars.hcl` files from the
-template directory. The `source.auto.pkrvars.hcl` file (updated by `labctl images sync`) provides
-`vyos_iso_url` and `vyos_iso_checksum` without explicit `-var-file` flags.
+**VyOS Build Process:** The workflow uses the official `vyos/vyos-build` Docker container
+with build flavors. The `gateway.toml` flavor embeds the VyOS configuration directly into
+the image, with SSH credentials injected via placeholder replacement.
 
 ### 8.3 Mergify Configuration (.mergify.yml)
 
@@ -533,11 +539,6 @@ pull_request_rules:
 
 **Check Name Format:** `Workflow Name / Job Name`
 
-**Why `Build VyOS Image / validate`?** The bot PR from `updateFile` modifies
-`infrastructure/.../source.auto.pkrvars.hcl`, which triggers `packer-vyos.yml`
-(not `images-sync.yml`). Using the Packer validate check ensures the PR is
-tested before auto-merge.
-
 ## 9. Security
 
 ### SOPS-Encrypted Credentials
@@ -558,15 +559,15 @@ sops:
 
 ### SOPS-Encrypted SSH Keypair
 
-Used by Packer builds for VM provisioning. The public key is baked into the image; the private key is stored for future use (e.g., post-build testing).
+Used by VyOS builds for image provisioning. The public key is baked into the image; the private key is stored for future use (e.g., post-build testing).
 
 ```bash
-# Generate keypair
-ssh-keygen -t ed25519 -f packer-ssh -N "" -C "packer-ci"
+# Generate keypair (filename kept as packer-ssh for compatibility)
+ssh-keygen -t ed25519 -f packer-ssh -N "" -C "vyos-ci"
 
 # Create SOPS file
 cat > images/packer-ssh.sops.yaml << 'EOF'
-ssh_public_key: "ssh-ed25519 AAAA... packer-ci"
+ssh_public_key: "ssh-ed25519 AAAA... vyos-ci"
 ssh_private_key: |
   -----BEGIN OPENSSH PRIVATE KEY-----
   ...

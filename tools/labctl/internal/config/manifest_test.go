@@ -63,7 +63,7 @@ spec:
         checksum: sha256:abc123
       destination: vyos/vyos-1.5.iso
       updateFile:
-        path: infrastructure/network/vyos/packer/source.auto.pkrvars.hcl
+        path: infrastructure/example/vars.hcl
         replacements:
           - pattern: 'vyos_iso_url\s*=\s*"[^"]*"'
             value: 'vyos_iso_url = "{{ .Source.URL }}"'

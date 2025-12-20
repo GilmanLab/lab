@@ -116,7 +116,7 @@ vyos_iso_checksum = "sha256:newchecksum"`,
 			wantModified: false,
 		},
 		{
-			name: "HCL packer vars format",
+			name: "HCL vars format",
 			replacements: []Replacement{
 				{Pattern: `vyos_iso_url\s*=\s*"[^"]*"`, Value: `vyos_iso_url = "{{ .Source.URL }}"`},
 			},

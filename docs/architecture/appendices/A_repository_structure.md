@@ -47,8 +47,6 @@ lab/
 │   │       │   │   └── gateway.toml          # Build flavor with baked-in config
 │   │       │   └── scripts/
 │   │       │       └── generate-flavor.sh    # Injects SSH credentials
-│   │       ├── packer/                       # DEPRECATED - see vyos-build/
-│   │       │   └── ...
 │   │       └── ansible/
 │   │           ├── playbooks/
 │   │           │   └── deploy.yml
@@ -575,10 +573,6 @@ VyOS provides the lab's core networking: routing, firewall, DHCP, and VPN.
 **VyOS Build (`infrastructure/network/vyos/vyos-build/`):**
 - `build-flavors/gateway.toml` - Build flavor defining config.boot content
 - `scripts/generate-flavor.sh` - Injects SSH credentials from SOPS secrets
-
-**Legacy Packer Build (`infrastructure/network/vyos/packer/`):**
-- DEPRECATED - replaced by vyos-build approach
-- Uses keystroke automation which is brittle and requires KVM/QEMU
 
 **Ongoing Management:**
 - Configuration stored as declarative VyOS config file
