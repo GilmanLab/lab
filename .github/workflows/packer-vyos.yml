@@ -1,40 +1,41 @@
-# TODO: Migrate to vyos-build (https://github.com/vyos/vyos-build) for building
-# VyOS images instead of Packer. The vyos-build approach provides better support
-# for customization and doesn't require nested virtualization in CI.
+# DEPRECATED: This Packer-based workflow has been replaced by vyos-build.yml
 #
-# This workflow is currently disabled pending the migration.
+# The new vyos-build approach:
+# - Uses official vyos/vyos-build Docker container
+# - Bakes configuration directly into the image (no keystroke automation)
+# - Doesn't require KVM/QEMU nested virtualization
+# - Produces identical raw disk output for Tinkerbell/NAS deployment
+#
+# See: .github/workflows/vyos-build.yml
+# See: infrastructure/network/vyos/vyos-build/README.md
+#
+# This file is preserved for historical reference only.
 
-name: Build VyOS Image
-
-# Disabled: triggers commented out pending vyos-build migration
-# on:
-#   push:
-#     branches: [master]
-#     paths:
-#       - 'infrastructure/network/vyos/packer/**'
-#   pull_request:
-#     paths:
-#       - 'infrastructure/network/vyos/packer/**'
-#   workflow_dispatch:
+name: "[DEPRECATED] Build VyOS Image (Packer)"
 
 on:
   workflow_dispatch:
     inputs:
       note:
-        description: 'Workflow disabled - see TODO comment at top of file'
+        description: 'This workflow is deprecated. Use vyos-build.yml instead.'
         type: string
-        default: 'disabled'
-
-# concurrency:
-#   group: packer-vyos-${{ github.ref }}
-#   cancel-in-progress: false
+        default: 'deprecated'
 
 jobs:
-  disabled:
-    if: false
+  deprecated:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "Workflow disabled pending vyos-build migration"
+      - name: Workflow deprecated
+        run: |
+          echo "This Packer-based workflow has been replaced by vyos-build.yml"
+          echo ""
+          echo "The new workflow uses the official vyos-build toolchain which:"
+          echo "  - Doesn't require KVM/QEMU nested virtualization"
+          echo "  - Bakes configuration directly into the image"
+          echo "  - Is more reliable than keystroke-based automation"
+          echo ""
+          echo "To build VyOS images, use the 'Build VyOS Image' workflow instead."
+          exit 1
 
 # Historical reference - Packer-based build workflow:
 #
