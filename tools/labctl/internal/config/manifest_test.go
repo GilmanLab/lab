@@ -115,7 +115,7 @@ spec:
         checksum: sha256:abc123
       destination: images/image.iso
 `,
-			wantErr: `image[0] "": name is required`,
+			wantErr: `image[0] "unnamed-0": name is required`,
 		},
 		{
 			name: "missing source url",

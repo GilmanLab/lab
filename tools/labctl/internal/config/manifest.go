@@ -98,49 +98,93 @@ func ParseManifest(data []byte) (*ImageManifest, error) {
 	return &manifest, nil
 }
 
+// ParseManifestRaw parses an image manifest from YAML data without validation.
+// Use this when you want to collect all validation errors separately.
+func ParseManifestRaw(data []byte) (*ImageManifest, error) {
+	var manifest ImageManifest
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		return nil, fmt.Errorf("parse manifest YAML: %w", err)
+	}
+	return &manifest, nil
+}
+
+// LoadManifestRaw reads and parses an image manifest without validation.
+// Use this when you want to collect all validation errors separately.
+func LoadManifestRaw(path string) (*ImageManifest, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // G304: Path is provided by user
+	if err != nil {
+		return nil, fmt.Errorf("read manifest file: %w", err)
+	}
+	return ParseManifestRaw(data)
+}
+
 // Validate checks that the manifest is well-formed.
 func (m *ImageManifest) Validate() error {
+	errs := m.ValidateAll()
+	if len(errs) > 0 {
+		return errs[0]
+	}
+	return nil
+}
+
+// ValidateAll checks the manifest and returns all validation errors.
+func (m *ImageManifest) ValidateAll() []error {
+	var errs []error
+
 	if m.APIVersion != SupportedAPIVersion {
-		return fmt.Errorf("unsupported apiVersion %q, expected %q", m.APIVersion, SupportedAPIVersion)
+		errs = append(errs, fmt.Errorf("unsupported apiVersion %q, expected %q", m.APIVersion, SupportedAPIVersion))
 	}
 
 	if m.Kind != "ImageManifest" {
-		return fmt.Errorf("unsupported kind %q, expected %q", m.Kind, "ImageManifest")
+		errs = append(errs, fmt.Errorf("unsupported kind %q, expected %q", m.Kind, "ImageManifest"))
 	}
 
 	if m.Metadata.Name == "" {
-		return fmt.Errorf("metadata.name is required")
+		errs = append(errs, fmt.Errorf("metadata.name is required"))
 	}
 
 	for i, img := range m.Spec.Images {
-		if err := img.Validate(); err != nil {
-			return fmt.Errorf("image[%d] %q: %w", i, img.Name, err)
+		imgName := img.Name
+		if imgName == "" {
+			imgName = fmt.Sprintf("unnamed-%d", i)
+		}
+		for _, err := range img.ValidateAll() {
+			errs = append(errs, fmt.Errorf("image[%d] %q: %w", i, imgName, err))
 		}
 	}
 
-	return nil
+	return errs
 }
 
 // Validate checks that the image configuration is valid.
 func (i *Image) Validate() error {
+	errs := i.ValidateAll()
+	if len(errs) > 0 {
+		return errs[0]
+	}
+	return nil
+}
+
+// ValidateAll checks the image configuration and returns all validation errors.
+func (i *Image) ValidateAll() []error {
+	var errs []error
+
 	if i.Name == "" {
-		return fmt.Errorf("name is required")
+		errs = append(errs, fmt.Errorf("name is required"))
 	}
 
 	if i.Source.URL == "" {
-		return fmt.Errorf("source.url is required")
-	}
-
-	if !strings.HasPrefix(i.Source.URL, "https://") {
-		return fmt.Errorf("source.url must use HTTPS")
+		errs = append(errs, fmt.Errorf("source.url is required"))
+	} else if !strings.HasPrefix(i.Source.URL, "https://") {
+		errs = append(errs, fmt.Errorf("source.url must use HTTPS"))
 	}
 
 	if i.Source.Checksum == "" {
-		return fmt.Errorf("source.checksum is required")
+		errs = append(errs, fmt.Errorf("source.checksum is required"))
 	}
 
 	if i.Destination == "" {
-		return fmt.Errorf("destination is required")
+		errs = append(errs, fmt.Errorf("destination is required"))
 	}
 
 	// Validate decompress option
@@ -149,12 +193,12 @@ func (i *Image) Validate() error {
 		case "xz", "gzip", "zstd":
 			// valid
 		default:
-			return fmt.Errorf("unsupported decompress format %q, must be xz, gzip, or zstd", i.Source.Decompress)
+			errs = append(errs, fmt.Errorf("unsupported decompress format %q, must be xz, gzip, or zstd", i.Source.Decompress))
 		}
 
 		// validation.expected is required when decompress is used
 		if i.Validation == nil || i.Validation.Expected == "" {
-			return fmt.Errorf("validation.expected is required when decompress is used")
+			errs = append(errs, fmt.Errorf("validation.expected is required when decompress is used"))
 		}
 	}
 
@@ -164,30 +208,28 @@ func (i *Image) Validate() error {
 		case "sha256", "sha512":
 			// valid
 		default:
-			return fmt.Errorf("unsupported validation algorithm %q, must be sha256 or sha512", i.Validation.Algorithm)
+			errs = append(errs, fmt.Errorf("unsupported validation algorithm %q, must be sha256 or sha512", i.Validation.Algorithm))
 		}
 	}
 
 	// Validate updateFile regex patterns compile
 	if i.UpdateFile != nil {
 		if i.UpdateFile.Path == "" {
-			return fmt.Errorf("updateFile.path is required")
+			errs = append(errs, fmt.Errorf("updateFile.path is required"))
 		}
 
 		for j, r := range i.UpdateFile.Replacements {
 			if r.Pattern == "" {
-				return fmt.Errorf("updateFile.replacements[%d].pattern is required", j)
-			}
-
-			if _, err := regexp.Compile(r.Pattern); err != nil {
-				return fmt.Errorf("updateFile.replacements[%d].pattern is invalid: %w", j, err)
+				errs = append(errs, fmt.Errorf("updateFile.replacements[%d].pattern is required", j))
+			} else if _, err := regexp.Compile(r.Pattern); err != nil {
+				errs = append(errs, fmt.Errorf("updateFile.replacements[%d].pattern is invalid: %w", j, err))
 			}
 
 			if r.Value == "" {
-				return fmt.Errorf("updateFile.replacements[%d].value is required", j)
+				errs = append(errs, fmt.Errorf("updateFile.replacements[%d].value is required", j))
 			}
 		}
 	}
 
-	return nil
+	return errs
 }
